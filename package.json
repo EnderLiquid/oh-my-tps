@@ -1,0 +1,49 @@
+{
+  "name": "oh-my-tps",
+  "version": "0.1.0",
+  "description": "Tiny live TTFT and TPS readouts for the Pi coding agent.",
+  "type": "module",
+  "license": "MIT",
+  "author": "EnderLiquid",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi-coding-agent",
+    "tps",
+    "ttft"
+  ],
+  "files": [
+    "extensions",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": "./extensions/oh-my-tps.ts"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "dependencies": {
+    "tokenx": "^1.3.0"
+  },
+  "homepage": "https://github.com/EnderLiquid/oh-my-tps#readme",
+  "bugs": {
+    "url": "https://github.com/EnderLiquid/oh-my-tps/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EnderLiquid/oh-my-tps.git"
+  },
+  "scripts": {
+    "test:types": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "typescript": "^5.9.3"
+  }
+}
