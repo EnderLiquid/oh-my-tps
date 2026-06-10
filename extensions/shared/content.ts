@@ -3,7 +3,7 @@ export type AssistantContentBlock = {
 	text?: string;
 	thinking?: string;
 	name?: string;
-	args?: unknown;
+	arguments?: unknown;
 };
 
 export function collectAssistantText(message: { content?: AssistantContentBlock[] }): string {
@@ -19,7 +19,7 @@ export function collectAssistantText(message: { content?: AssistantContentBlock[
 		}
 		if (block.type === "toolCall") {
 			text += block.name ?? "";
-			text += JSON.stringify(block.args ?? "");
+			text += JSON.stringify(block.arguments ?? "");
 		}
 	}
 	return text;
