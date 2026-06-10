@@ -32,7 +32,6 @@ export default function ohMyTps(pi: ExtensionAPI): void {
 	let streamStartedAt = 0;
 	let lockedTtft: number | null = null;
 	let lastLiveTps: number | null = null;
-	let lastFinalTps: number | null = null;
 	let recentSamples: RequestSample[] = [];
 	let waitingTimer: NodeJS.Timeout | undefined;
 	let currentWaitingDeltaLabel = UNKNOWN_DELTA_LABEL;
@@ -68,6 +67,10 @@ export default function ohMyTps(pi: ExtensionAPI): void {
 		}
 	}
 
+	function getLastSample(): RequestSample | null {
+		return recentSamples.length > 0 ? recentSamples[recentSamples.length - 1] : null;
+	}
+
 	function renderIdle(ctx: ExtensionContext): void {
 		phase = "idle";
 		stopWaitingTimer();
@@ -84,8 +87,9 @@ export default function ohMyTps(pi: ExtensionAPI): void {
 			const avg = getAverageSample();
 			return avg ? `Δ${formatNumber(avg.tps)}A` : UNKNOWN_DELTA_LABEL;
 		}
-		if (isFinitePositive(lastFinalTps)) {
-			return `Δ${formatNumber(lastFinalTps)}L`;
+		const lastSample = getLastSample();
+		if (lastSample) {
+			return `Δ${formatNumber(lastSample.tps)}L`;
 		}
 		const avg = getAverageSample();
 		return avg ? `Δ${formatNumber(avg.tps)}A` : UNKNOWN_DELTA_LABEL;
@@ -135,10 +139,6 @@ export default function ohMyTps(pi: ExtensionAPI): void {
 			finalTps = outputTokens / elapsed;
 		} else if (isFinitePositive(lastLiveTps)) {
 			finalTps = lastLiveTps;
-		}
-
-		if (isFinitePositive(finalTps)) {
-			lastFinalTps = finalTps;
 		}
 
 		if (isFinitePositive(finalTps) && isFinitePositive(lockedTtft)) {
