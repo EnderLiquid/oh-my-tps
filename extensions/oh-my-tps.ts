@@ -168,12 +168,6 @@ export default function ohMyTps(pi: ExtensionAPI): void {
 		const now = performance.now();
 		if (phase === "waiting") {
 			beginStreaming(now);
-		} else if (phase !== "streaming") {
-			if (requestStartedAt <= 0) requestStartedAt = now;
-			if (!isFinitePositive(lockedTtft)) lockedTtft = Math.max(0, (now - requestStartedAt) / 1000);
-			streamStartedAt = now;
-			phase = "streaming";
-			stopWaitingTimer();
 		}
 
 		const currentText = collectAssistantText(event.message as { content?: AssistantContentBlock[] });
