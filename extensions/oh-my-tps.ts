@@ -36,7 +36,6 @@ export default function ohMyTps(pi: ExtensionAPI): void {
 	let recentSamples: RequestSample[] = [];
 	let waitingTimer: NodeJS.Timeout | undefined;
 	let currentWaitingDeltaLabel = UNKNOWN_DELTA_LABEL;
-	let lastMessageText = "";
 
 	function stopWaitingTimer(): void {
 		if (waitingTimer) clearInterval(waitingTimer);
@@ -115,7 +114,6 @@ export default function ohMyTps(pi: ExtensionAPI): void {
 		streamStartedAt = 0;
 		lockedTtft = null;
 		lastLiveTps = null;
-		lastMessageText = "";
 		currentWaitingDeltaLabel = selectWaitingDeltaLabel();
 		renderWaiting(ctx);
 	}
@@ -174,12 +172,11 @@ export default function ohMyTps(pi: ExtensionAPI): void {
 		}
 
 		const currentText = collectAssistantText(event.message as { content?: AssistantContentBlock[] });
-		lastMessageText = currentText;
 
 		const elapsed = streamStartedAt > 0 ? (now - streamStartedAt) / 1000 : 0;
 		let estimatedTps: number | null = null;
-		if (elapsed >= MIN_STREAM_SECONDS && lastMessageText.length > 0) {
-			const estimatedTokens = estimateTokens(lastMessageText);
+		if (elapsed >= MIN_STREAM_SECONDS && currentText.length > 0) {
+			const estimatedTokens = estimateTokens(currentText);
 			estimatedTps = estimatedTokens / elapsed;
 			if (isFinitePositive(estimatedTps)) {
 				lastLiveTps = estimatedTps;
