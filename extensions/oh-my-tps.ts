@@ -4,7 +4,7 @@ import { estimateTokens } from "./shared/token-estimator.js";
 
 const STATUS_KEY = "oh-my-tps";
 const WAITING_UPDATE_MS = 200;
-const MIN_STREAM_SECONDS = 0.1;
+const MIN_STREAM_SECONDS = 0.2;
 const MAX_RECENT_SAMPLES = 5;
 const UNKNOWN_DELTA_LABEL = "Δ?";
 const UNKNOWN_TTFT_LABEL = "τ…";
