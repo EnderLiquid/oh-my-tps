@@ -31,6 +31,7 @@ What it looks like:
 ```
 
 That's it.
+
 Ten characters. It just works.
 
 If you want, you can keep reading for the details—but at this point you already know how to use it.
@@ -137,9 +138,7 @@ If a provider or a specific response does not return usable output token data, t
 
 #### 1. Token estimation is heuristic
 
-`tokenx` is not an exact tokenizer. It is a lightweight heuristic estimator. That is why it works well for fast UI updates: it is small, fast, and easy to run on every streaming update.
-
-The tradeoff is obvious: it is not designed to match every model family exactly.
+`tokenx` is not an exact tokenizer. It is a lightweight heuristic estimator. That is why it works well for fast UI updates: it is small, fast, and easy to run on every streaming update. The tradeoff is obvious: it is not designed to match every model family exactly.
 
 `tokenx` is designed and benchmarked closer to **GPT-style tokenization / English text**. When you use other model families or output that contains non-English text, the live estimate can drift further away from the final settled value.
 

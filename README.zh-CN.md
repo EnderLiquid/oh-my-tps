@@ -31,6 +31,7 @@ pi install git:github.com/EnderLiquid/oh-my-tps
 ```
 
 就这么多。
+
 十个字符的空间，开箱即用的体验。
 
 感兴趣可以继续往下看，但到这里你其实已经会用了。
