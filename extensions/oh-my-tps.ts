@@ -4,8 +4,11 @@ import { estimateTokens } from "./shared/token-estimator.js";
 
 const STATUS_KEY = "oh-my-tps";
 const WAITING_UPDATE_MS = 200;
-const MIN_STREAM_SECONDS = 0.1;
+const MIN_STREAM_SECONDS = 0.2;
 const MAX_RECENT_SAMPLES = 5;
+const UNKNOWN_DELTA_LABEL = "Δ?";
+const UNKNOWN_TTFT_LABEL = "τ…";
+const EMPTY_STATUS_LABEL = `${UNKNOWN_TTFT_LABEL} ${UNKNOWN_DELTA_LABEL}`;
 
 type RequestPhase = "idle" | "waiting" | "streaming" | "settled";
 
@@ -29,11 +32,9 @@ export default function ohMyTps(pi: ExtensionAPI): void {
 	let streamStartedAt = 0;
 	let lockedTtft: number | null = null;
 	let lastLiveTps: number | null = null;
-	let lastFinalTps: number | null = null;
 	let recentSamples: RequestSample[] = [];
 	let waitingTimer: NodeJS.Timeout | undefined;
-	let waitingDeltaLabel = "Δ?";
-	let lastMessageText = "";
+	let currentWaitingDeltaLabel = UNKNOWN_DELTA_LABEL;
 
 	function stopWaitingTimer(): void {
 		if (waitingTimer) clearInterval(waitingTimer);
@@ -66,12 +67,16 @@ export default function ohMyTps(pi: ExtensionAPI): void {
 		}
 	}
 
+	function getLastSample(): RequestSample | null {
+		return recentSamples.length > 0 ? recentSamples[recentSamples.length - 1] : null;
+	}
+
 	function renderIdle(ctx: ExtensionContext): void {
 		phase = "idle";
 		stopWaitingTimer();
 		const avg = getAverageSample();
 		if (!avg) {
-			setStatus(ctx, "τ… Δ?");
+			setStatus(ctx, EMPTY_STATUS_LABEL);
 			return;
 		}
 		setStatus(ctx, `τ${formatNumber(avg.ttft)}A Δ${formatNumber(avg.tps)}A`);
@@ -80,28 +85,29 @@ export default function ohMyTps(pi: ExtensionAPI): void {
 	function selectWaitingDeltaLabel(): string {
 		if (requestIndexInPrompt <= 1) {
 			const avg = getAverageSample();
-			return avg ? `Δ${formatNumber(avg.tps)}A` : "Δ?";
+			return avg ? `Δ${formatNumber(avg.tps)}A` : UNKNOWN_DELTA_LABEL;
 		}
-		if (isFinitePositive(lastFinalTps)) {
-			return `Δ${formatNumber(lastFinalTps)}L`;
+		const lastSample = getLastSample();
+		if (lastSample) {
+			return `Δ${formatNumber(lastSample.tps)}L`;
 		}
 		const avg = getAverageSample();
-		return avg ? `Δ${formatNumber(avg.tps)}A` : "Δ?";
+		return avg ? `Δ${formatNumber(avg.tps)}A` : UNKNOWN_DELTA_LABEL;
 	}
 
 	function renderWaiting(ctx: ExtensionContext): void {
 		stopWaitingTimer();
 		const update = () => {
 			const elapsed = Math.max(0, (performance.now() - requestStartedAt) / 1000);
-			setStatus(ctx, `τ${formatNumber(elapsed)} ${waitingDeltaLabel}`);
+			setStatus(ctx, `τ${formatNumber(elapsed)} ${currentWaitingDeltaLabel}`);
 		};
 		update();
 		waitingTimer = setInterval(update, WAITING_UPDATE_MS);
 	}
 
 	function renderStreaming(ctx: ExtensionContext, estimatedTps: number | null): void {
-		const ttftLabel = isFinitePositive(lockedTtft) ? `τ${formatNumber(lockedTtft)}` : "τ…";
-		const deltaLabel = isFinitePositive(estimatedTps) ? `Δ${formatNumber(estimatedTps)}` : waitingDeltaLabel;
+		const ttftLabel = isFinitePositive(lockedTtft) ? `τ${formatNumber(lockedTtft)}` : UNKNOWN_TTFT_LABEL;
+		const deltaLabel = isFinitePositive(estimatedTps) ? `Δ${formatNumber(estimatedTps)}` : currentWaitingDeltaLabel;
 		setStatus(ctx, `${ttftLabel} ${deltaLabel}`);
 	}
 
@@ -112,8 +118,7 @@ export default function ohMyTps(pi: ExtensionAPI): void {
 		streamStartedAt = 0;
 		lockedTtft = null;
 		lastLiveTps = null;
-		lastMessageText = "";
-		waitingDeltaLabel = selectWaitingDeltaLabel();
+		currentWaitingDeltaLabel = selectWaitingDeltaLabel();
 		renderWaiting(ctx);
 	}
 
@@ -136,16 +141,12 @@ export default function ohMyTps(pi: ExtensionAPI): void {
 			finalTps = lastLiveTps;
 		}
 
-		if (isFinitePositive(finalTps)) {
-			lastFinalTps = finalTps;
-		}
-
 		if (isFinitePositive(finalTps) && isFinitePositive(lockedTtft)) {
 			pushSample({ tps: finalTps, ttft: lockedTtft });
 		}
 
-		const ttftLabel = isFinitePositive(lockedTtft) ? `τ${formatNumber(lockedTtft)}` : "τ…";
-		const deltaLabel = isFinitePositive(finalTps) ? `Δ${formatNumber(finalTps)}` : waitingDeltaLabel;
+		const ttftLabel = isFinitePositive(lockedTtft) ? `τ${formatNumber(lockedTtft)}` : UNKNOWN_TTFT_LABEL;
+		const deltaLabel = isFinitePositive(finalTps) ? `Δ${formatNumber(finalTps)}` : currentWaitingDeltaLabel;
 		setStatus(ctx, `${ttftLabel} ${deltaLabel}`);
 	}
 
@@ -168,21 +169,14 @@ export default function ohMyTps(pi: ExtensionAPI): void {
 		const now = performance.now();
 		if (phase === "waiting") {
 			beginStreaming(now);
-		} else if (phase !== "streaming") {
-			if (requestStartedAt <= 0) requestStartedAt = now;
-			if (!isFinitePositive(lockedTtft)) lockedTtft = Math.max(0, (now - requestStartedAt) / 1000);
-			streamStartedAt = now;
-			phase = "streaming";
-			stopWaitingTimer();
 		}
 
 		const currentText = collectAssistantText(event.message as { content?: AssistantContentBlock[] });
-		lastMessageText = currentText;
 
 		const elapsed = streamStartedAt > 0 ? (now - streamStartedAt) / 1000 : 0;
 		let estimatedTps: number | null = null;
-		if (elapsed >= MIN_STREAM_SECONDS && lastMessageText.length > 0) {
-			const estimatedTokens = estimateTokens(lastMessageText);
+		if (elapsed >= MIN_STREAM_SECONDS && currentText.length > 0) {
+			const estimatedTokens = estimateTokens(currentText);
 			estimatedTps = estimatedTokens / elapsed;
 			if (isFinitePositive(estimatedTps)) {
 				lastLiveTps = estimatedTps;
