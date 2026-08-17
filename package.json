@@ -40,6 +40,7 @@
     "url": "git+https://github.com/EnderLiquid/oh-my-tps.git"
   },
   "scripts": {
+    "test": "node --test tests/oh-my-tps.test.mjs",
     "test:types": "tsc --noEmit"
   },
   "devDependencies": {
