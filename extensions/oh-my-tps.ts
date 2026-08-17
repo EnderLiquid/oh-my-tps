@@ -25,6 +25,15 @@ function isFinitePositive(value: number | null | undefined): value is number {
 	return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
 
+function hasContentDelta(event: { assistantMessageEvent: { type: string; delta?: string } }): boolean {
+	const { type, delta } = event.assistantMessageEvent;
+	return (
+		(type === "text_delta" || type === "thinking_delta" || type === "toolcall_delta") &&
+		typeof delta === "string" &&
+		delta.length > 0
+	);
+}
+
 export default function ohMyTps(pi: ExtensionAPI): void {
 	let phase: RequestPhase = "idle";
 	let requestIndexInPrompt = 0;
@@ -71,9 +80,17 @@ export default function ohMyTps(pi: ExtensionAPI): void {
 		return recentSamples.length > 0 ? recentSamples[recentSamples.length - 1] : null;
 	}
 
+	function resetRequestMeasurement(): void {
+		requestStartedAt = 0;
+		streamStartedAt = 0;
+		lockedTtft = null;
+		lastLiveTps = null;
+	}
+
 	function renderIdle(ctx: ExtensionContext): void {
 		phase = "idle";
 		stopWaitingTimer();
+		resetRequestMeasurement();
 		const avg = getAverageSample();
 		if (!avg) {
 			setStatus(ctx, EMPTY_STATUS_LABEL);
@@ -114,10 +131,8 @@ export default function ohMyTps(pi: ExtensionAPI): void {
 	function beginWaiting(ctx: ExtensionContext): void {
 		requestIndexInPrompt += 1;
 		phase = "waiting";
+		resetRequestMeasurement();
 		requestStartedAt = performance.now();
-		streamStartedAt = 0;
-		lockedTtft = null;
-		lastLiveTps = null;
 		currentWaitingDeltaLabel = selectWaitingDeltaLabel();
 		renderWaiting(ctx);
 	}
@@ -130,10 +145,19 @@ export default function ohMyTps(pi: ExtensionAPI): void {
 	}
 
 	function finalizeRequest(ctx: ExtensionContext, outputTokens: number): void {
+		if (phase === "waiting") {
+			phase = "settled";
+			stopWaitingTimer();
+			setStatus(ctx, `${UNKNOWN_TTFT_LABEL} ${currentWaitingDeltaLabel}`);
+			resetRequestMeasurement();
+			return;
+		}
+		if (phase !== "streaming") return;
+
 		phase = "settled";
 		stopWaitingTimer();
 
-		const elapsed = streamStartedAt > 0 ? Math.max(0, (performance.now() - streamStartedAt) / 1000) : 0;
+		const elapsed = Math.max(0, (performance.now() - streamStartedAt) / 1000);
 		let finalTps: number | null = null;
 		if (elapsed > 0 && outputTokens > 0) {
 			finalTps = outputTokens / elapsed;
@@ -148,6 +172,7 @@ export default function ohMyTps(pi: ExtensionAPI): void {
 		const ttftLabel = isFinitePositive(lockedTtft) ? `τ${formatNumber(lockedTtft)}` : UNKNOWN_TTFT_LABEL;
 		const deltaLabel = isFinitePositive(finalTps) ? `Δ${formatNumber(finalTps)}` : currentWaitingDeltaLabel;
 		setStatus(ctx, `${ttftLabel} ${deltaLabel}`);
+		resetRequestMeasurement();
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -164,16 +189,17 @@ export default function ohMyTps(pi: ExtensionAPI): void {
 	});
 
 	pi.on("message_update", async (event, ctx) => {
-		if (event.message.role !== "assistant") return;
+		if (event.message.role !== "assistant" || !hasContentDelta(event)) return;
 
 		const now = performance.now();
 		if (phase === "waiting") {
 			beginStreaming(now);
 		}
+		if (phase !== "streaming") return;
 
 		const currentText = collectAssistantText(event.message as { content?: AssistantContentBlock[] });
 
-		const elapsed = streamStartedAt > 0 ? (now - streamStartedAt) / 1000 : 0;
+		const elapsed = (now - streamStartedAt) / 1000;
 		let estimatedTps: number | null = null;
 		if (elapsed >= MIN_STREAM_SECONDS && currentText.length > 0) {
 			const estimatedTokens = estimateTokens(currentText);

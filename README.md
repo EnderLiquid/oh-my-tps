@@ -92,7 +92,7 @@ idle τ… Δ? (before the very first request)
 
 `τ` is straightforward.
 
-Once a provider request is sent, the extension enters `waiting` and refreshes the elapsed time every 200ms. The moment the first assistant streaming update arrives, that time delta is locked in as the TTFT for the request.
+Once a provider request is sent, the extension enters `waiting` and refreshes the elapsed time every 200ms. The moment the first assistant streaming delta with actual content arrives, that time delta is locked in as the TTFT for the request. Metadata updates such as content-block starts do not end the wait.
 
 So in practice:
 
