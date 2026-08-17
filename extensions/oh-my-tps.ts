@@ -6,9 +6,10 @@ const WAITING_UPDATE_MS = 200;
 const UNKNOWN_DELTA_LABEL = "Δ?";
 const UNKNOWN_TTFT_LABEL = "τ…";
 
-const LIVE_TPS_WINDOW_SECONDS = 5;
-const MIN_LIVE_TPS_ELAPSED_SECONDS = 2;
-const MIN_SETTLE_TPS_DURATION_SECONDS = 2;
+const MILLISECONDS_PER_SECOND = 1_000;
+const LIVE_TPS_WINDOW_MS = 5_000;
+const MIN_LIVE_TPS_ELAPSED_MS = 2_000;
+const MIN_SETTLE_TPS_DURATION_MS = 2_000;
 const MAX_RECENT_SAMPLES = 5;
 
 type RequestPhase = "idle" | "waiting" | "streaming" | "settled";
@@ -133,7 +134,7 @@ export default function ohMyTps(pi: ExtensionAPI): void {
 		stopWaitingTimer();
 		const update = () => {
 			if (phase !== "waiting" || requestStartedAt === null) return;
-			const elapsed = Math.max(0, (performance.now() - requestStartedAt) / 1000);
+			const elapsed = Math.max(0, (performance.now() - requestStartedAt) / MILLISECONDS_PER_SECOND);
 			setStatus(ctx, `τ${formatNumber(elapsed)} ${getLastOrAverageTpsLabel()}`);
 		};
 		update();
@@ -170,7 +171,7 @@ export default function ohMyTps(pi: ExtensionAPI): void {
 		phase = "streaming";
 		stopWaitingTimer();
 		firstContentDeltaAt = now;
-		lockedTtft = Math.max(0, (now - requestStartedAt) / 1000);
+		lockedTtft = Math.max(0, (now - requestStartedAt) / MILLISECONDS_PER_SECOND);
 		if (isFiniteNonNegative(lockedTtft)) {
 			pushRecent(recentTtftSamples, lockedTtft);
 		}
@@ -180,15 +181,15 @@ export default function ohMyTps(pi: ExtensionAPI): void {
 		if (firstLiveDeltaAt === null) firstLiveDeltaAt = now;
 		liveQueue.push({ receivedAt: now, delta });
 
-		const cutoff = now - LIVE_TPS_WINDOW_SECONDS * 1000;
+		const cutoff = now - LIVE_TPS_WINDOW_MS;
 		liveQueue = liveQueue.filter((item) => item.receivedAt >= cutoff);
 
-		const elapsed = Math.max(0, (now - firstLiveDeltaAt) / 1000);
-		if (elapsed < MIN_LIVE_TPS_ELAPSED_SECONDS) return;
+		const elapsedMs = Math.max(0, now - firstLiveDeltaAt);
+		if (elapsedMs < MIN_LIVE_TPS_ELAPSED_MS) return;
 
-		const duration = Math.min(LIVE_TPS_WINDOW_SECONDS, elapsed);
+		const durationMs = Math.min(LIVE_TPS_WINDOW_MS, elapsedMs);
 		const estimatedTokens = estimateTokens(liveQueue.map((item) => item.delta).join(""));
-		const tps = duration > 0 ? estimatedTokens / duration : null;
+		const tps = durationMs > 0 ? (estimatedTokens * MILLISECONDS_PER_SECOND) / durationMs : null;
 		if (!isFinitePositive(tps)) return;
 
 		currentLiveTps = tps;
@@ -198,10 +199,10 @@ export default function ohMyTps(pi: ExtensionAPI): void {
 	function resolveSettledTps(outputTokens: number | undefined, messageEndedAt: number): SettledTps | null {
 		if (isFinitePositive(outputTokens)) {
 			if (firstContentDeltaAt === null) return null;
-			const duration = Math.max(0, (messageEndedAt - firstContentDeltaAt) / 1000);
-			if (duration < MIN_SETTLE_TPS_DURATION_SECONDS) return null;
+			const durationMs = Math.max(0, messageEndedAt - firstContentDeltaAt);
+			if (durationMs < MIN_SETTLE_TPS_DURATION_MS) return null;
 
-			const tps = outputTokens / duration;
+			const tps = (outputTokens * MILLISECONDS_PER_SECOND) / durationMs;
 			return isFinitePositive(tps) ? { tps, source: "usage" } : null;
 		}
 
