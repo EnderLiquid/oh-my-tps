@@ -1,6 +1,6 @@
 {
   "name": "oh-my-tps",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Tiny live TTFT and TPS readouts for the Pi coding agent.",
   "type": "module",
   "license": "MIT",
@@ -40,6 +40,7 @@
     "url": "git+https://github.com/EnderLiquid/oh-my-tps.git"
   },
   "scripts": {
+    "test": "node --test tests/oh-my-tps.test.mjs",
     "test:types": "tsc --noEmit"
   },
   "devDependencies": {

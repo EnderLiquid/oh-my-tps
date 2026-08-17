@@ -21,8 +21,8 @@ pi install git:github.com/EnderLiquid/oh-my-tps
 `oh-my-tps` does one thing:
 it adds a tiny live speed readout to the Pi TUI so you can see first-token latency and output speed while the model is responding.
 
-- `τ`: TTFT, time to first token, in seconds
-- `Δ`: TPS, tokens per second
+- `τ`: TTFT, how long it takes for the first token to arrive, in seconds
+- `Δ`: TPS, tokens output per second
 
 What it looks like:
 
@@ -48,133 +48,178 @@ You will see readings like these in the TUI footer area:
 
 Suffixes:
 
-- `A`: Average, the average final value across recent requests
-- `L`: Last, the final value from the previous request
+- `A`: Average. TTFT and TPS maintain separate histories.
+- `L`: Last valid final TPS from the previous round, used only for `Δ`.
 
-A quick way to read them:
+Here is how to read them:
 
-- `τ0.8 Δ48.6`: the response is currently streaming; TTFT was about 0.8s and the current live TPS estimate is about 48.6
-- `τ1.1 Δ49.7L`: the request has been sent, but streaming has not started yet; TTFT is still counting, so the extension shows the previous request's final TPS as a reference
-- `τ0.8A Δ52.4A`: Pi is currently idle, so the extension shows the recent average performance
+- `τ0.8 Δ48.6`: the response is streaming, TTFT was about 0.8 seconds, and a valid current live TPS is available.
+- `τ1.1 Δ49.7L`: the request has been sent, but the first token has not arrived yet. TTFT is still counting, while `Δ` temporarily shows the previous round's last valid final TPS.
+- `τ0.8A Δ52.4A`: Pi is idle and shows recent averages for TTFT and TPS.
 
-The live `Δ` shown during streaming is an estimate. The final `Δ` shown after the response ends is more trustworthy.
+While a response is streaming, `Δ` may still show the previous TPS, the average TPS, or an unknown value until live TPS satisfies its initial calculation condition. When a response ends, `Δ` prefers the provider's `usage.output`; it uses the last valid live TPS only when no usable `usage.output` is available. When the current round has no valid final TPS, the final state falls back to the previous-round TPS from before this request, then to the average TPS.
 
 ## How it works
 
-This section is for people who want to know what the extension is actually measuring.
+This section is for readers who want to understand what the extension measures.
 
 ### State machine
 
-Internally, the extension moves through four phases:
+Internally, the extension has four phases:
 
-1. **waiting**: the request has been sent and is waiting for the first token
-2. **streaming**: the assistant is actively streaming output
-3. **settled**: the response has finished
-4. **idle**: the turn is over and the extension is showing historical values
+1. **Waiting**: a request has been sent and is waiting for the first token.
+2. **Streaming**: the first token has arrived and the response is streaming.
+3. **Final**: the response has ended and the TPS settlement attempt for this round is complete.
+4. **Idle**: no provider request is currently being processed.
 
 Example:
 
 ```text
-idle τ… Δ? (before the very first request)
-    -> waiting(req1) τ0.2 Δ? (first request in the prompt, no usable average yet, τ updates every 200ms)
-    ...
--> idle τ1.5A Δ50.0A (idle, with historical averages available)
-    -> waiting(req1) τ0.2 Δ50.0A  (first request in the prompt, shows average as baseline while waiting)
-    -> streaming(req1) τ1.3 Δ51.0  (live Δ updates, τ is now locked)
-    -> settled(req1) τ1.3 Δ52.0  (final Δ locked, τ locked)
-    -> waiting(req2+) τ0.2 Δ52.0L  (second or later request in the same prompt, uses last final value as baseline)
-    -> streaming(req2+) τ1.7 Δ49.0  (live Δ updates, τ locked)
-    -> settled(req2+) τ1.7 Δ49.5  (final Δ locked, τ locked)
--> idle τ1.5A Δ50.0A
+idle τ… Δ? (no historical samples yet)
+    -> waiting τ0.2 Δ? (waiting for the first token; τ updates every 200ms)
+    -> streaming τ1.3 Δ? (the first token may have come from thinking; τ is locked and live TPS is not ready yet)
+    -> streaming τ1.3 Δ51.0 (a new non-thinking delta arrived and live TPS has met the observation condition)
+    -> final τ1.3 Δ52.0 (this round's valid final TPS came from `usage.output` or the live-TPS fallback)
+    -> idle τ1.3A Δ52.0A
+    -> waiting τ0.2 Δ52.0L (prefer the previous round's last valid final TPS)
 ```
 
 ### Where `τ` comes from
 
-`τ` is straightforward.
+TTFT is the time from sending a request until the first token arrives.
 
-Once a provider request is sent, the extension enters `waiting` and refreshes the elapsed time every 200ms. The moment the first assistant streaming update arrives, that time delta is locked in as the TTFT for the request.
+The extension uses the first non-empty streaming delta that carries tokens as its observable signal. These events trigger TTFT when `delta.length > 0`:
 
-So in practice:
+- `text_delta`
+- `thinking_delta`
+- `toolcall_delta`
 
-- during `waiting`, `τ` keeps increasing
-- once `streaming` begins, `τ` stops changing
-- the `τ` shown later in `settled`, the historical `τ` reused before the next request, and the `τ` that contributes to idle averages are all based on that final locked TTFT
+These events do not trigger TTFT:
 
-### Where live `Δ` and final `Δ` come from
+- `text_start`
+- `thinking_start`
+- `toolcall_start`
+- Empty deltas and other metadata events
 
-These two values come from different sources, and that distinction matters.
+After the first valid delta arrives, the extension locks the difference between that moment and the request start time as the TTFT for this round.
 
-#### Live `Δ`
+In practice:
 
-During streaming, the provider does not continuously tell Pi exactly how many new output tokens just arrived. That means live `Δ` has to be estimated locally.
+- `τ` keeps increasing during the waiting phase.
+- Once the first text, thinking, or tool-call token arrives, the extension enters the streaming phase and locks `τ`.
+- Metadata such as `thinking_start` does not end the wait, but a non-empty `thinking_delta` does.
+- If a provider encrypts thinking content and does not transmit thinking deltas, the extension can measure TTFT only to the first observable token; it cannot recover the internal timing of the hidden thinking phase.
 
-The current implementation does this:
+TTFT and TPS histories are maintained independently. As soon as the first token arrives, the round can contribute to the TTFT average even if it ultimately has no valid TPS.
 
-1. Take all assistant text that has streamed so far for the current response
-2. Estimate how many tokens that text roughly corresponds to with [`tokenx`](https://github.com/johannschopplich/tokenx)
-3. Divide that estimate by the elapsed streaming time
+### Where live `Δ` comes from
 
-In other words, live `Δ` is essentially:
+Providers do not continuously tell Pi exactly how many tokens they just generated, so live TPS must be estimated locally. The current implementation uses a rolling queue of non-thinking deltas:
+
+- Includes non-empty `text_delta` events.
+- Includes non-empty `toolcall_delta` events.
+- Excludes every `thinking_delta`, including thinking summaries.
+
+The default window is the most recent 5 seconds. Whenever a new non-thinking delta arrives, the extension:
+
+1. Adds the raw delta and its arrival time to the queue.
+2. Removes entries outside the window.
+3. Concatenates the deltas currently in the window in arrival order.
+4. Uses [`tokenx`](https://github.com/johannschopplich/tokenx) to estimate the token count of that concatenated content.
+5. Divides the window's token count by the observation duration to produce a new live TPS.
+
+The formula is:
 
 ```text
-estimated output tokens so far / elapsed streaming time so far
+live TPS = estimated tokens from non-thinking deltas in the recent window
+           /
+           min(5 seconds, observation duration since the first non-thinking delta)
 ```
 
-It is not the provider's real-time token truth. It is a local approximation meant for UI feedback.
+The extension observes at least 2 seconds from the first non-thinking delta before calculating live TPS for the first time. This avoids unusually high values caused by a tiny denominator at the start of streaming or by a provider flushing its initial buffered content all at once.
 
-#### Final settled `Δ`
+Live TPS is the delivery rate of response text and tool arguments in the recent window. It is recalculated only when a new non-thinking delta arrives; no background timer is used.
 
-When the response ends, if the provider returns `usage.output`, the extension uses that to compute the final TPS:
+### Where final `Δ` comes from
+
+When a response ends, the extension settles TPS in this order.
+
+#### 1. Provider `usage.output`
+
+When the provider returns a finite positive `usage.output`, and at least 2 seconds have passed from the first non-empty text, thinking, or tool-call delta to the end of the response, the extension uses:
 
 ```text
-final output tokens / total streaming time
+final TPS = usage.output
+            /
+            (response end time - first valid content delta time)
 ```
 
-This is usually more trustworthy than live `Δ`, because it is based on the provider's final reported output token count rather than a local estimate.
+`usage.output` is usually the provider-reported count of real output tokens and may include reasoning tokens. Therefore, its numerator may include thinking tokens, while its denominator starts at the first observable content delta.
 
-If a provider or a specific response does not return usable output token data, the extension falls back to the last live estimate as a best-effort display value.
+For models with encrypted thinking, hidden thinking may have occurred before the first observable delta. The client cannot know the duration of that hidden reasoning, so final TPS from `usage.output` may be slightly higher than the true value.
+
+#### 2. Live-TPS fallback
+
+Only when the provider has no usable `usage.output` does the extension use the last valid live TPS from the current round:
+
+```text
+final TPS = last valid live TPS from the current round
+```
+
+This source excludes thinking and reflects only the recent-window output rate for text and tool arguments.
+
+If the provider returns a usable `usage.output`, but fewer than 2 seconds have elapsed from the first valid content delta to the response end, the extension does not switch to the live-TPS fallback. That round has no valid final TPS.
 
 ### Why live and final values can differ
 
 #### 1. Token estimation is heuristic
 
-`tokenx` is not an exact tokenizer. It is a lightweight heuristic estimator. That is why it works well for fast UI updates: it is small, fast, and easy to run on every streaming update. The tradeoff is obvious: it is not designed to match every model family exactly.
+`tokenx` is not an exact tokenizer. It is a lightweight, heuristic estimator. Its advantage is that it is small and fast enough for live UI updates. The tradeoff is clear: it is not designed to align exactly with every model.
 
-`tokenx` is designed and benchmarked closer to **GPT-style tokenization / English text**. When you use other model families or output that contains non-English text, the live estimate can drift further away from the final settled value.
+`tokenx` is designed and benchmarked more closely around **GPT tokenization / English text**. The estimate can drift further when using other model families or output containing non-English text.
 
-#### 2. Streaming itself is uneven
+#### 2. Streaming output is uneven
 
-Model output does not arrive in the UI as a perfectly uniform token-by-token stream. The observed readout is affected by things like:
+Model output does not arrive in the UI at a perfectly uniform rate, one token at a time. The observed rate is affected by factors such as:
 
-- the provider's own SSE / chunk flush strategy
-- how Pi receives and surfaces updates
-- structural changes caused by thinking blocks, tool calls, and normal text appearing together
+- The provider's SSE / chunk flush strategy.
+- How Pi publishes events.
+- Structural changes caused by thinking, tool calls, and normal text appearing together.
 
-So live `Δ` typically behaves like this:
+#### 3. The two TPS values measure different scopes
 
-- unstable at first, then gradually settles
-- often approaches the final settled value, but does not perfectly match it
+Live TPS and final TPS from `usage.output` are defined differently:
+
+- Live TPS counts only non-thinking text and tool calls in the recent window.
+- Final TPS from `usage.output` uses provider-reported output tokens and the time from the first text, thinking, or tool-call delta to response end.
+- Live TPS excludes thinking, while final TPS from `usage.output` may include reasoning tokens.
+
+So the two values need not match even when neither has estimation error. The live value reflects the output cadence near the end of the current response, while the final value reflects the overall observable streaming phase of the round.
 
 ### Average value `A`
 
-In the current implementation, `A` means the average final performance across the most recent 5 provider requests.
+The extension maintains up to five TTFT samples and five TPS samples separately:
 
-- average `τ`: the average final TTFT across those recent requests
-- average `Δ`: the average settled TPS across those recent requests
+- TTFT can enter its history once the first token arrives.
+- TPS enters its history only when the round has a valid final TPS.
+- Final TPS calculated from the provider's `usage.output`, as well as final TPS from the live-TPS fallback, both enter the average TPS.
+- A request can therefore contribute TTFT without contributing TPS.
+
+`A` is the average of recent valid samples. It does not guarantee that the TTFT and TPS averages come from exactly the same set of requests, nor that every TPS sample in the average uses the same token scope.
 
 ### How to interpret the data
 
 A good rule of thumb is:
 
-- `τ`: highly useful
-- settled / average `Δ`: the most useful numbers when comparing results
-- live `Δ`: reflects real-time trend and perceived speed
+- `τ`: highly useful for observing request latency.
+- Final / average `Δ`: useful for observing recent overall output-speed performance.
+- Live `Δ`: useful for observing the current real-time output speed of response text or tool arguments.
 
 ## Where it fits
 
-- useful as a rough quantitative reference for LLM latency and speed
-- useful for quickly spotting obviously slow requests in long Pi sessions
-- not meant for strict model benchmarking
+- Useful as a rough quantitative reference for LLM speed and latency.
+- Useful for quickly spotting an obviously slow request in a long session.
+- Not intended for strict model-performance comparisons or benchmarking.
 
 ## License
 

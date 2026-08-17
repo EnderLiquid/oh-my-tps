@@ -1,20 +1,33 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { collectAssistantText, type AssistantContentBlock } from "./shared/content.js";
 import { estimateTokens } from "./shared/token-estimator.js";
 
 const STATUS_KEY = "oh-my-tps";
 const WAITING_UPDATE_MS = 200;
-const MIN_STREAM_SECONDS = 0.2;
-const MAX_RECENT_SAMPLES = 5;
 const UNKNOWN_DELTA_LABEL = "Δ?";
 const UNKNOWN_TTFT_LABEL = "τ…";
-const EMPTY_STATUS_LABEL = `${UNKNOWN_TTFT_LABEL} ${UNKNOWN_DELTA_LABEL}`;
+
+const MILLISECONDS_PER_SECOND = 1_000;
+const LIVE_TPS_WINDOW_MS = 5_000;
+const MIN_LIVE_TPS_ELAPSED_MS = 2_000;
+const MIN_SETTLE_TPS_DURATION_MS = 2_000;
+const MAX_RECENT_SAMPLES = 5;
 
 type RequestPhase = "idle" | "waiting" | "streaming" | "settled";
+type TpsSource = "usage" | "live-fallback";
 
-type RequestSample = {
+type LiveDelta = {
+	receivedAt: number;
+	delta: string;
+};
+
+type SettledTps = {
 	tps: number;
-	ttft: number;
+	source: TpsSource;
+};
+
+type ContentDelta = {
+	delta: string;
+	isLiveTpsDelta: boolean;
 };
 
 function formatNumber(value: number): string {
@@ -25,16 +38,32 @@ function isFinitePositive(value: number | null | undefined): value is number {
 	return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
 
+function isFiniteNonNegative(value: number | null | undefined): value is number {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function getContentDelta(event: { assistantMessageEvent: { type: string; delta?: string } }): ContentDelta | null {
+	const { type, delta } = event.assistantMessageEvent;
+	if (typeof delta !== "string" || delta.length === 0) return null;
+	if (type === "thinking_delta") return { delta, isLiveTpsDelta: false };
+	if (type === "text_delta" || type === "toolcall_delta") return { delta, isLiveTpsDelta: true };
+	return null;
+}
+
 export default function ohMyTps(pi: ExtensionAPI): void {
 	let phase: RequestPhase = "idle";
-	let requestIndexInPrompt = 0;
-	let requestStartedAt = 0;
-	let streamStartedAt = 0;
+	let requestStartedAt: number | null = null;
+	let firstContentDeltaAt: number | null = null;
+	let firstLiveDeltaAt: number | null = null;
 	let lockedTtft: number | null = null;
-	let lastLiveTps: number | null = null;
-	let recentSamples: RequestSample[] = [];
+	let liveQueue: LiveDelta[] = [];
+	let currentLiveTps: number | null = null;
+	let lastValidLiveTps: number | null = null;
+	let roundSettledTps: SettledTps | null = null;
+	let lastSettledTps: SettledTps | null = null;
+	const recentTtftSamples: number[] = [];
+	const recentTpsSamples: SettledTps[] = [];
 	let waitingTimer: NodeJS.Timeout | undefined;
-	let currentWaitingDeltaLabel = UNKNOWN_DELTA_LABEL;
 
 	function stopWaitingTimer(): void {
 		if (waitingTimer) clearInterval(waitingTimer);
@@ -46,117 +75,157 @@ export default function ohMyTps(pi: ExtensionAPI): void {
 		ctx.ui.setStatus(STATUS_KEY, text);
 	}
 
-	function getAverageSample(): RequestSample | null {
-		if (recentSamples.length === 0) return null;
-		let totalTps = 0;
-		let totalTtft = 0;
-		for (const sample of recentSamples) {
-			totalTps += sample.tps;
-			totalTtft += sample.ttft;
-		}
-		return {
-			tps: totalTps / recentSamples.length,
-			ttft: totalTtft / recentSamples.length,
-		};
+	function getAverage(values: number[]): number | null {
+		if (values.length === 0) return null;
+		let total = 0;
+		for (const value of values) total += value;
+		return total / values.length;
 	}
 
-	function pushSample(sample: RequestSample): void {
-		recentSamples.push(sample);
-		if (recentSamples.length > MAX_RECENT_SAMPLES) {
-			recentSamples = recentSamples.slice(-MAX_RECENT_SAMPLES);
+	function pushRecent<T>(samples: T[], sample: T): void {
+		samples.push(sample);
+		if (samples.length > MAX_RECENT_SAMPLES) {
+			samples.splice(0, samples.length - MAX_RECENT_SAMPLES);
 		}
 	}
 
-	function getLastSample(): RequestSample | null {
-		return recentSamples.length > 0 ? recentSamples[recentSamples.length - 1] : null;
+	function getAverageTtft(): number | null {
+		return getAverage(recentTtftSamples);
+	}
+
+	function getAverageTps(): number | null {
+		return getAverage(recentTpsSamples.map((sample) => sample.tps));
+	}
+
+	function getAverageTtftLabel(): string {
+		const average = getAverageTtft();
+		return isFiniteNonNegative(average) ? `τ${formatNumber(average)}A` : UNKNOWN_TTFT_LABEL;
+	}
+
+	function getAverageTpsLabel(): string {
+		const average = getAverageTps();
+		return isFinitePositive(average) ? `Δ${formatNumber(average)}A` : UNKNOWN_DELTA_LABEL;
+	}
+
+	function getLastOrAverageTpsLabel(lastTps: SettledTps | null = lastSettledTps): string {
+		if (lastTps) return `Δ${formatNumber(lastTps.tps)}L`;
+		return getAverageTpsLabel();
+	}
+
+	function resetRequestMeasurement(): void {
+		requestStartedAt = null;
+		firstContentDeltaAt = null;
+		firstLiveDeltaAt = null;
+		lockedTtft = null;
+		liveQueue = [];
+		currentLiveTps = null;
+		lastValidLiveTps = null;
+		roundSettledTps = null;
 	}
 
 	function renderIdle(ctx: ExtensionContext): void {
 		phase = "idle";
 		stopWaitingTimer();
-		const avg = getAverageSample();
-		if (!avg) {
-			setStatus(ctx, EMPTY_STATUS_LABEL);
-			return;
-		}
-		setStatus(ctx, `τ${formatNumber(avg.ttft)}A Δ${formatNumber(avg.tps)}A`);
-	}
-
-	function selectWaitingDeltaLabel(): string {
-		if (requestIndexInPrompt <= 1) {
-			const avg = getAverageSample();
-			return avg ? `Δ${formatNumber(avg.tps)}A` : UNKNOWN_DELTA_LABEL;
-		}
-		const lastSample = getLastSample();
-		if (lastSample) {
-			return `Δ${formatNumber(lastSample.tps)}L`;
-		}
-		const avg = getAverageSample();
-		return avg ? `Δ${formatNumber(avg.tps)}A` : UNKNOWN_DELTA_LABEL;
+		resetRequestMeasurement();
+		setStatus(ctx, `${getAverageTtftLabel()} ${getAverageTpsLabel()}`);
 	}
 
 	function renderWaiting(ctx: ExtensionContext): void {
 		stopWaitingTimer();
 		const update = () => {
-			const elapsed = Math.max(0, (performance.now() - requestStartedAt) / 1000);
-			setStatus(ctx, `τ${formatNumber(elapsed)} ${currentWaitingDeltaLabel}`);
+			if (phase !== "waiting" || requestStartedAt === null) return;
+			const elapsed = Math.max(0, (performance.now() - requestStartedAt) / MILLISECONDS_PER_SECOND);
+			setStatus(ctx, `τ${formatNumber(elapsed)} ${getLastOrAverageTpsLabel()}`);
 		};
 		update();
 		waitingTimer = setInterval(update, WAITING_UPDATE_MS);
 	}
 
-	function renderStreaming(ctx: ExtensionContext, estimatedTps: number | null): void {
-		const ttftLabel = isFinitePositive(lockedTtft) ? `τ${formatNumber(lockedTtft)}` : UNKNOWN_TTFT_LABEL;
-		const deltaLabel = isFinitePositive(estimatedTps) ? `Δ${formatNumber(estimatedTps)}` : currentWaitingDeltaLabel;
-		setStatus(ctx, `${ttftLabel} ${deltaLabel}`);
+	function renderStreaming(ctx: ExtensionContext): void {
+		const ttftLabel = isFiniteNonNegative(lockedTtft) ? `τ${formatNumber(lockedTtft)}` : UNKNOWN_TTFT_LABEL;
+		const tpsLabel = isFinitePositive(currentLiveTps)
+			? `Δ${formatNumber(currentLiveTps)}`
+			: getLastOrAverageTpsLabel();
+		setStatus(ctx, `${ttftLabel} ${tpsLabel}`);
+	}
+
+	function renderSettled(ctx: ExtensionContext, settledTps: SettledTps | null, previousLastTps: SettledTps | null): void {
+		const ttftLabel = isFiniteNonNegative(lockedTtft)
+			? `τ${formatNumber(lockedTtft)}`
+			: getAverageTtftLabel();
+		const tpsLabel = settledTps
+			? `Δ${formatNumber(settledTps.tps)}`
+			: getLastOrAverageTpsLabel(previousLastTps);
+		setStatus(ctx, `${ttftLabel} ${tpsLabel}`);
 	}
 
 	function beginWaiting(ctx: ExtensionContext): void {
-		requestIndexInPrompt += 1;
 		phase = "waiting";
+		resetRequestMeasurement();
 		requestStartedAt = performance.now();
-		streamStartedAt = 0;
-		lockedTtft = null;
-		lastLiveTps = null;
-		currentWaitingDeltaLabel = selectWaitingDeltaLabel();
 		renderWaiting(ctx);
 	}
 
 	function beginStreaming(now: number): void {
+		if (requestStartedAt === null) return;
 		phase = "streaming";
 		stopWaitingTimer();
-		streamStartedAt = now;
-		lockedTtft = requestStartedAt > 0 ? Math.max(0, (now - requestStartedAt) / 1000) : null;
+		firstContentDeltaAt = now;
+		lockedTtft = Math.max(0, (now - requestStartedAt) / MILLISECONDS_PER_SECOND);
+		if (isFiniteNonNegative(lockedTtft)) {
+			pushRecent(recentTtftSamples, lockedTtft);
+		}
 	}
 
-	function finalizeRequest(ctx: ExtensionContext, outputTokens: number): void {
+	function updateLiveTps(now: number, delta: string): void {
+		if (firstLiveDeltaAt === null) firstLiveDeltaAt = now;
+		liveQueue.push({ receivedAt: now, delta });
+
+		const cutoff = now - LIVE_TPS_WINDOW_MS;
+		liveQueue = liveQueue.filter((item) => item.receivedAt >= cutoff);
+
+		const elapsedMs = Math.max(0, now - firstLiveDeltaAt);
+		if (elapsedMs < MIN_LIVE_TPS_ELAPSED_MS) return;
+
+		const durationMs = Math.min(LIVE_TPS_WINDOW_MS, elapsedMs);
+		const estimatedTokens = estimateTokens(liveQueue.map((item) => item.delta).join(""));
+		const tps = durationMs > 0 ? (estimatedTokens * MILLISECONDS_PER_SECOND) / durationMs : null;
+		if (!isFinitePositive(tps)) return;
+
+		currentLiveTps = tps;
+		lastValidLiveTps = tps;
+	}
+
+	function resolveSettledTps(outputTokens: number | undefined, messageEndedAt: number): SettledTps | null {
+		if (isFinitePositive(outputTokens)) {
+			if (firstContentDeltaAt === null) return null;
+			const durationMs = Math.max(0, messageEndedAt - firstContentDeltaAt);
+			if (durationMs < MIN_SETTLE_TPS_DURATION_MS) return null;
+
+			const tps = (outputTokens * MILLISECONDS_PER_SECOND) / durationMs;
+			return isFinitePositive(tps) ? { tps, source: "usage" } : null;
+		}
+
+		return isFinitePositive(lastValidLiveTps) ? { tps: lastValidLiveTps, source: "live-fallback" } : null;
+	}
+
+	function finalizeRequest(ctx: ExtensionContext, outputTokens: number | undefined): void {
+		if (phase !== "waiting" && phase !== "streaming") return;
+
+		const previousLastTps = lastSettledTps;
 		phase = "settled";
 		stopWaitingTimer();
 
-		const elapsed = streamStartedAt > 0 ? Math.max(0, (performance.now() - streamStartedAt) / 1000) : 0;
-		let finalTps: number | null = null;
-		if (elapsed > 0 && outputTokens > 0) {
-			finalTps = outputTokens / elapsed;
-		} else if (isFinitePositive(lastLiveTps)) {
-			finalTps = lastLiveTps;
-		}
+		const settledTps = resolveSettledTps(outputTokens, performance.now());
+		roundSettledTps = settledTps;
+		if (settledTps) pushRecent(recentTpsSamples, settledTps);
 
-		if (isFinitePositive(finalTps) && isFinitePositive(lockedTtft)) {
-			pushSample({ tps: finalTps, ttft: lockedTtft });
-		}
-
-		const ttftLabel = isFinitePositive(lockedTtft) ? `τ${formatNumber(lockedTtft)}` : UNKNOWN_TTFT_LABEL;
-		const deltaLabel = isFinitePositive(finalTps) ? `Δ${formatNumber(finalTps)}` : currentWaitingDeltaLabel;
-		setStatus(ctx, `${ttftLabel} ${deltaLabel}`);
+		renderSettled(ctx, settledTps, previousLastTps);
+		lastSettledTps = settledTps;
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
-		requestIndexInPrompt = 0;
 		renderIdle(ctx);
-	});
-
-	pi.on("agent_start", async () => {
-		requestIndexInPrompt = 0;
 	});
 
 	pi.on("before_provider_request", async (_event, ctx) => {
@@ -165,34 +234,26 @@ export default function ohMyTps(pi: ExtensionAPI): void {
 
 	pi.on("message_update", async (event, ctx) => {
 		if (event.message.role !== "assistant") return;
+		const contentDelta = getContentDelta(event);
+		if (!contentDelta || (phase !== "waiting" && phase !== "streaming")) return;
 
 		const now = performance.now();
-		if (phase === "waiting") {
-			beginStreaming(now);
-		}
+		if (phase === "waiting") beginStreaming(now);
+		if (phase !== "streaming") return;
 
-		const currentText = collectAssistantText(event.message as { content?: AssistantContentBlock[] });
-
-		const elapsed = streamStartedAt > 0 ? (now - streamStartedAt) / 1000 : 0;
-		let estimatedTps: number | null = null;
-		if (elapsed >= MIN_STREAM_SECONDS && currentText.length > 0) {
-			const estimatedTokens = estimateTokens(currentText);
-			estimatedTps = estimatedTokens / elapsed;
-			if (isFinitePositive(estimatedTps)) {
-				lastLiveTps = estimatedTps;
-			}
-		}
-
-		renderStreaming(ctx, estimatedTps);
+		if (contentDelta.isLiveTpsDelta) updateLiveTps(now, contentDelta.delta);
+		renderStreaming(ctx);
 	});
 
 	pi.on("message_end", async (event, ctx) => {
 		if (event.message.role !== "assistant") return;
-		const outputTokens = event.message.usage?.output ?? 0;
-		finalizeRequest(ctx, outputTokens);
+		finalizeRequest(ctx, event.message.usage?.output);
 	});
 
 	pi.on("agent_end", async (_event, ctx) => {
+		if (phase === "waiting" || phase === "streaming") {
+			lastSettledTps = null;
+		}
 		renderIdle(ctx);
 	});
 
