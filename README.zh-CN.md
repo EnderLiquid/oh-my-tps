@@ -59,6 +59,20 @@ pi install git:github.com/EnderLiquid/oh-my-tps
 
 流式传输时的 `Δ` 仍可能显示为上一轮 TPS、平均 TPS 或未知值，直到实时 TPS 满足首次计算条件。响应结束后的 `Δ` 优先使用服务提供方返回的 `usage.output`；只有没有可用的 `usage.output` 时，才使用最后一次有效的实时 TPS。本轮没有有效最终 TPS 时，最终状态回退到本轮开始前的上一轮 TPS，再回退到平均 TPS。
 
+## 配置
+
+默认开箱即用。要更改读数颜色，创建 `~/.pi/agent/oh-my-tps.json`：
+
+```json
+{
+  "builtinRenderer": {
+    "color": "muted"
+  }
+}
+```
+
+同时，插件支持自行绘制并替换内置读数。做法是把状态数据发布到 Pi 的事件总线，实现测量与渲染解耦，内置读数只是其中一个事件订阅者。你可以关闭内置读数，订阅同一份数据并渲染到任何位置。详见 [CONFIGURATION.md](./CONFIGURATION.md)。
+
 ## 原理说明
 
 下面这部分面向希望了解插件原理的用户。
