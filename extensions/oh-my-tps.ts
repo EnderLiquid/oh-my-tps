@@ -1,264 +1,93 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { estimateTokens } from "./shared/token-estimator.js";
+/**
+ * oh-my-tps 扩展入口。
+ *
+ * 本文件只做 Pi 适配：把 Pi 的事件转换为测量核心的调用，
+ * 并把核心产出的快照广播到事件总线。渲染逻辑不在这里，
+ * 内置渲染器与第三方渲染器一样，都是总线的订阅者。
+ */
+import { getAgentDir, type ExtensionAPI, type ExtensionContext, type ThemeColor } from "@earendil-works/pi-coding-agent";
+import { join } from "node:path";
+import { createBuiltinRenderer } from "./shared/builtin-renderer.js";
+import { CONFIG_FILE_NAME, loadConfig } from "./shared/config.js";
+import { TPS_REQUEST_CHANNEL, TPS_STATUS_CHANNEL, type TpsStatusView } from "./shared/events.js";
+import { createTpsMeasurement, type TpsMeasurement } from "./shared/measurement.js";
 
-const STATUS_KEY = "oh-my-tps";
-const WAITING_UPDATE_MS = 200;
-const UNKNOWN_DELTA_LABEL = "Δ?";
-const UNKNOWN_TTFT_LABEL = "τ…";
-
-const MILLISECONDS_PER_SECOND = 1_000;
-const LIVE_TPS_WINDOW_MS = 5_000;
-const MIN_LIVE_TPS_ELAPSED_MS = 2_000;
-const MIN_SETTLE_TPS_DURATION_MS = 2_000;
-const MAX_RECENT_SAMPLES = 5;
-
-type RequestPhase = "idle" | "waiting" | "streaming" | "settled";
-type TpsSource = "usage" | "live-fallback";
-
-type LiveDelta = {
-	receivedAt: number;
-	delta: string;
-};
-
-type SettledTps = {
-	tps: number;
-	source: TpsSource;
-};
-
-type ContentDelta = {
-	delta: string;
-	isLiveTpsDelta: boolean;
-};
-
-function formatNumber(value: number): string {
-	return value.toFixed(1);
-}
-
-function isFinitePositive(value: number | null | undefined): value is number {
-	return typeof value === "number" && Number.isFinite(value) && value > 0;
-}
-
-function isFiniteNonNegative(value: number | null | undefined): value is number {
-	return typeof value === "number" && Number.isFinite(value) && value >= 0;
-}
-
-function getContentDelta(event: { assistantMessageEvent: { type: string; delta?: string } }): ContentDelta | null {
-	const { type, delta } = event.assistantMessageEvent;
-	if (typeof delta !== "string" || delta.length === 0) return null;
-	if (type === "thinking_delta") return { delta, isLiveTpsDelta: false };
-	if (type === "text_delta" || type === "toolcall_delta") return { delta, isLiveTpsDelta: true };
-	return null;
+/**
+ * 校验配置里的颜色名。
+ *
+ * 主题实例只在渲染时才有意义，且 Pi 的主题色集合会随版本增删，
+ * 因此不用静态列表校验，而是探测当前主题是否认识该色名。
+ */
+function resolveThemeColor(ctx: ExtensionContext, color: string): ThemeColor {
+	try {
+		ctx.ui.theme.fg(color as ThemeColor, "");
+		return color as ThemeColor;
+	} catch {
+		ctx.ui.notify(`oh-my-tps: unknown theme color "${color}"; falling back to "dim"`, "warning");
+		return "dim";
+	}
 }
 
 export default function ohMyTps(pi: ExtensionAPI): void {
-	let phase: RequestPhase = "idle";
-	let requestStartedAt: number | null = null;
-	let firstContentDeltaAt: number | null = null;
-	let firstLiveDeltaAt: number | null = null;
-	let lockedTtft: number | null = null;
-	let liveQueue: LiveDelta[] = [];
-	let currentLiveTps: number | null = null;
-	let lastValidLiveTps: number | null = null;
-	let roundSettledTps: SettledTps | null = null;
-	let lastSettledTps: SettledTps | null = null;
-	const recentTtftSamples: number[] = [];
-	const recentTpsSamples: SettledTps[] = [];
-	let waitingTimer: NodeJS.Timeout | undefined;
+	let measurement: TpsMeasurement | undefined;
+	let statusUnsubscribe: (() => void) | undefined;
 
-	function stopWaitingTimer(): void {
-		if (waitingTimer) clearInterval(waitingTimer);
-		waitingTimer = undefined;
-	}
+	// 订阅者可能在 session_start 之前就发出拉取请求，因此监听器在工厂阶段注册。
+	pi.events.on(TPS_REQUEST_CHANNEL, () => {
+		measurement?.refresh();
+	});
 
-	function setStatus(ctx: ExtensionContext, text: string): void {
-		if (!ctx.hasUI) return;
-		ctx.ui.setStatus(STATUS_KEY, text);
-	}
-
-	function getAverage(values: number[]): number | null {
-		if (values.length === 0) return null;
-		let total = 0;
-		for (const value of values) total += value;
-		return total / values.length;
-	}
-
-	function pushRecent<T>(samples: T[], sample: T): void {
-		samples.push(sample);
-		if (samples.length > MAX_RECENT_SAMPLES) {
-			samples.splice(0, samples.length - MAX_RECENT_SAMPLES);
-		}
-	}
-
-	function getAverageTtft(): number | null {
-		return getAverage(recentTtftSamples);
-	}
-
-	function getAverageTps(): number | null {
-		return getAverage(recentTpsSamples.map((sample) => sample.tps));
-	}
-
-	function getAverageTtftLabel(): string {
-		const average = getAverageTtft();
-		return isFiniteNonNegative(average) ? `τ${formatNumber(average)}A` : UNKNOWN_TTFT_LABEL;
-	}
-
-	function getAverageTpsLabel(): string {
-		const average = getAverageTps();
-		return isFinitePositive(average) ? `Δ${formatNumber(average)}A` : UNKNOWN_DELTA_LABEL;
-	}
-
-	function getLastOrAverageTpsLabel(lastTps: SettledTps | null = lastSettledTps): string {
-		if (lastTps) return `Δ${formatNumber(lastTps.tps)}L`;
-		return getAverageTpsLabel();
-	}
-
-	function resetRequestMeasurement(): void {
-		requestStartedAt = null;
-		firstContentDeltaAt = null;
-		firstLiveDeltaAt = null;
-		lockedTtft = null;
-		liveQueue = [];
-		currentLiveTps = null;
-		lastValidLiveTps = null;
-		roundSettledTps = null;
-	}
-
-	function renderIdle(ctx: ExtensionContext): void {
-		phase = "idle";
-		stopWaitingTimer();
-		resetRequestMeasurement();
-		setStatus(ctx, `${getAverageTtftLabel()} ${getAverageTpsLabel()}`);
-	}
-
-	function renderWaiting(ctx: ExtensionContext): void {
-		stopWaitingTimer();
-		const update = () => {
-			if (phase !== "waiting" || requestStartedAt === null) return;
-			const elapsed = Math.max(0, (performance.now() - requestStartedAt) / MILLISECONDS_PER_SECOND);
-			setStatus(ctx, `τ${formatNumber(elapsed)} ${getLastOrAverageTpsLabel()}`);
-		};
-		update();
-		waitingTimer = setInterval(update, WAITING_UPDATE_MS);
-	}
-
-	function renderStreaming(ctx: ExtensionContext): void {
-		const ttftLabel = isFiniteNonNegative(lockedTtft) ? `τ${formatNumber(lockedTtft)}` : UNKNOWN_TTFT_LABEL;
-		const tpsLabel = isFinitePositive(currentLiveTps)
-			? `Δ${formatNumber(currentLiveTps)}`
-			: getLastOrAverageTpsLabel();
-		setStatus(ctx, `${ttftLabel} ${tpsLabel}`);
-	}
-
-	function renderSettled(ctx: ExtensionContext, settledTps: SettledTps | null, previousLastTps: SettledTps | null): void {
-		const ttftLabel = isFiniteNonNegative(lockedTtft)
-			? `τ${formatNumber(lockedTtft)}`
-			: getAverageTtftLabel();
-		const tpsLabel = settledTps
-			? `Δ${formatNumber(settledTps.tps)}`
-			: getLastOrAverageTpsLabel(previousLastTps);
-		setStatus(ctx, `${ttftLabel} ${tpsLabel}`);
-	}
-
-	function beginWaiting(ctx: ExtensionContext): void {
-		phase = "waiting";
-		resetRequestMeasurement();
-		requestStartedAt = performance.now();
-		renderWaiting(ctx);
-	}
-
-	function beginStreaming(now: number): void {
-		if (requestStartedAt === null) return;
-		phase = "streaming";
-		stopWaitingTimer();
-		firstContentDeltaAt = now;
-		lockedTtft = Math.max(0, (now - requestStartedAt) / MILLISECONDS_PER_SECOND);
-		if (isFiniteNonNegative(lockedTtft)) {
-			pushRecent(recentTtftSamples, lockedTtft);
-		}
-	}
-
-	function updateLiveTps(now: number, delta: string): void {
-		if (firstLiveDeltaAt === null) firstLiveDeltaAt = now;
-		liveQueue.push({ receivedAt: now, delta });
-
-		const cutoff = now - LIVE_TPS_WINDOW_MS;
-		liveQueue = liveQueue.filter((item) => item.receivedAt >= cutoff);
-
-		const elapsedMs = Math.max(0, now - firstLiveDeltaAt);
-		if (elapsedMs < MIN_LIVE_TPS_ELAPSED_MS) return;
-
-		const durationMs = Math.min(LIVE_TPS_WINDOW_MS, elapsedMs);
-		const estimatedTokens = estimateTokens(liveQueue.map((item) => item.delta).join(""));
-		const tps = durationMs > 0 ? (estimatedTokens * MILLISECONDS_PER_SECOND) / durationMs : null;
-		if (!isFinitePositive(tps)) return;
-
-		currentLiveTps = tps;
-		lastValidLiveTps = tps;
-	}
-
-	function resolveSettledTps(outputTokens: number | undefined, messageEndedAt: number): SettledTps | null {
-		if (isFinitePositive(outputTokens)) {
-			if (firstContentDeltaAt === null) return null;
-			const durationMs = Math.max(0, messageEndedAt - firstContentDeltaAt);
-			if (durationMs < MIN_SETTLE_TPS_DURATION_MS) return null;
-
-			const tps = (outputTokens * MILLISECONDS_PER_SECOND) / durationMs;
-			return isFinitePositive(tps) ? { tps, source: "usage" } : null;
-		}
-
-		return isFinitePositive(lastValidLiveTps) ? { tps: lastValidLiveTps, source: "live-fallback" } : null;
-	}
-
-	function finalizeRequest(ctx: ExtensionContext, outputTokens: number | undefined): void {
-		if (phase !== "waiting" && phase !== "streaming") return;
-
-		const previousLastTps = lastSettledTps;
-		phase = "settled";
-		stopWaitingTimer();
-
-		const settledTps = resolveSettledTps(outputTokens, performance.now());
-		roundSettledTps = settledTps;
-		if (settledTps) pushRecent(recentTpsSamples, settledTps);
-
-		renderSettled(ctx, settledTps, previousLastTps);
-		lastSettledTps = settledTps;
+	// session_start 在 new / resume / fork 时会重复触发，先释放上一轮的订阅与计时器。
+	function teardown(): void {
+		measurement?.stop();
+		measurement = undefined;
+		statusUnsubscribe?.();
+		statusUnsubscribe = undefined;
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
-		renderIdle(ctx);
-	});
+		teardown();
 
-	pi.on("before_provider_request", async (_event, ctx) => {
-		beginWaiting(ctx);
-	});
-
-	pi.on("message_update", async (event, ctx) => {
-		if (event.message.role !== "assistant") return;
-		const contentDelta = getContentDelta(event);
-		if (!contentDelta || (phase !== "waiting" && phase !== "streaming")) return;
-
-		const now = performance.now();
-		if (phase === "waiting") beginStreaming(now);
-		if (phase !== "streaming") return;
-
-		if (contentDelta.isLiveTpsDelta) updateLiveTps(now, contentDelta.delta);
-		renderStreaming(ctx);
-	});
-
-	pi.on("message_end", async (event, ctx) => {
-		if (event.message.role !== "assistant") return;
-		finalizeRequest(ctx, event.message.usage?.output);
-	});
-
-	pi.on("agent_end", async (_event, ctx) => {
-		if (phase === "waiting" || phase === "streaming") {
-			lastSettledTps = null;
+		const { config, warnings } = loadConfig(join(getAgentDir(), CONFIG_FILE_NAME));
+		for (const warning of warnings) {
+			ctx.ui.notify(warning, "warning");
 		}
-		renderIdle(ctx);
+
+		if (config.builtinRenderer.enabled) {
+			const color = resolveThemeColor(ctx, config.builtinRenderer.color);
+			const renderer = createBuiltinRenderer(ctx, { color });
+			statusUnsubscribe = pi.events.on(TPS_STATUS_CHANNEL, (data) => {
+				renderer.render((data ?? null) as TpsStatusView | null);
+			});
+		}
+
+		measurement = createTpsMeasurement({
+			sink: (view) => {
+				pi.events.emit(TPS_STATUS_CHANNEL, view);
+			},
+		});
+		measurement.start();
 	});
 
-	pi.on("session_shutdown", async (_event, ctx) => {
-		stopWaitingTimer();
-		if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);
+	pi.on("before_provider_request", async () => {
+		measurement?.beginWaiting();
+	});
+
+	pi.on("message_update", async (event) => {
+		if (event.message.role !== "assistant") return;
+		measurement?.handleMessageUpdate(event);
+	});
+
+	pi.on("message_end", async (event) => {
+		if (event.message.role !== "assistant") return;
+		measurement?.finalize(event.message.usage?.output);
+	});
+
+	pi.on("agent_end", async () => {
+		measurement?.handleAgentEnd();
+	});
+
+	pi.on("session_shutdown", async () => {
+		teardown();
 	});
 }

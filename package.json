@@ -14,11 +14,13 @@
   ],
   "files": [
     "extensions",
+    "CONFIGURATION.md",
     "README.md",
     "LICENSE"
   ],
   "exports": {
-    ".": "./extensions/oh-my-tps.ts"
+    ".": "./extensions/oh-my-tps.ts",
+    "./events": "./extensions/shared/events.ts"
   },
   "pi": {
     "extensions": [
@@ -40,7 +42,7 @@
     "url": "git+https://github.com/EnderLiquid/oh-my-tps.git"
   },
   "scripts": {
-    "test": "node --test tests/oh-my-tps.test.mjs",
+    "test": "node --import ./tests/ts-resolve-hook.ts --test \"tests/*.test.ts\"",
     "test:types": "tsc --noEmit"
   },
   "devDependencies": {
