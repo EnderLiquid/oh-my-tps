@@ -15,6 +15,7 @@
   "files": [
     "extensions",
     "CONFIGURATION.md",
+    "CONFIGURATION.zh-CN.md",
     "README.md",
     "LICENSE"
   ],

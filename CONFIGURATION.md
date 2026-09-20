@@ -1,10 +1,12 @@
-# 配置与自定义渲染
+# Configuration and Custom Rendering
 
-本文档说明如何配置 `oh-my-tps`，以及如何自定义状态栏的渲染方式。
+[简体中文](./CONFIGURATION.zh-CN.md) | English
 
-## 配置文件
+This document covers how to configure `oh-my-tps` and how to customize how the readout is rendered.
 
-位置固定为 `~/.pi/agent/oh-my-tps.json`（受 `PI_CODING_AGENT_DIR` 影响），不支持项目级配置。文件不存在时全部使用默认值。
+## Config file
+
+The config file lives at `~/.pi/agent/oh-my-tps.json` (affected by `PI_CODING_AGENT_DIR`). Project-level configuration is not supported. When the file is absent, all defaults apply.
 
 ```json
 {
@@ -15,20 +17,20 @@
 }
 ```
 
-| 键 | 类型 | 默认 | 说明 |
+| Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `builtinRenderer.enabled` | boolean | `true` | 是否启用内置渲染器 |
-| `builtinRenderer.color` | 主题色名 | `"dim"` | 内置渲染器的整行颜色 |
+| `builtinRenderer.enabled` | boolean | `true` | Whether to enable the built-in renderer |
+| `builtinRenderer.color` | theme color name | `"dim"` | Color of the whole built-in readout line |
 
-`builtinRenderer` 指本插件的内置渲染器，关闭它不影响任何自定义渲染器。
+`builtinRenderer` refers to the built-in renderer shipped with this extension. Disabling it does not affect any custom renderer.
 
-`color` 仅接受 Pi 的主题色名，例如 `dim`、`muted`、`accent`、`text`。这是刻意的取舍：支持 hex、256 色或按主题 override 会让配置与颜色解析变重，而这里只是一个状态栏读数。需要这类能力时，可以关闭内置渲染器，自行订阅事件总线渲染。
+`color` only accepts Pi theme color names, such as `dim`, `muted`, `accent`, `text`. This is a deliberate tradeoff: supporting hex values, 256 colors, or per-theme overrides would make the config and color resolution heavier, and this is only a status-bar readout. If you need those capabilities, disable the built-in renderer and subscribe to the event bus to render it yourself.
 
-文件不是合法 JSON、字段类型或颜色名错误时，都会回退到默认值并弹出警告。
+When the file is not valid JSON, or a field type or color name is wrong, the default is used instead and a warning is shown.
 
-修改配置后需要 `/reload` 才会生效。
+Configuration changes take effect after `/reload`.
 
-## 关闭内置渲染器
+## Disabling the built-in renderer
 
 ```json
 {
@@ -38,46 +40,46 @@
 }
 ```
 
-关闭后若没有其它自定义渲染器，状态栏不显示任何内容，这是预期行为。
+If no other custom renderer exists, the status bar shows nothing. This is expected.
 
-## 自定义渲染器
+## Custom renderers
 
-本插件核心只负责测量数据并把结果广播到 Pi 的事件总线。内置渲染器也是一个订阅者，因此自定义渲染器与它是对等关系。通过实现自定义渲染器，你可以用任意方式显示数据，包括 footer 以外的位置。
+The extension core only measures data and broadcasts the results to Pi's event bus. The built-in renderer is itself a subscriber, so a custom renderer is a peer to it. With a custom renderer you can display the data any way you like, including somewhere other than the footer.
 
-### 事件契约
+### Event contract
 
-| 通道 | 方向 | 载荷 |
+| Channel | Direction | Payload |
 | --- | --- | --- |
-| `oh-my-tps:status` | 核心 → 订阅者 | `TpsStatusView`，或 `null` |
-| `oh-my-tps:request` | 订阅者 → 核心 | 无（`undefined`） |
+| `oh-my-tps:status` | core → subscribers | `TpsStatusView`, or `null` |
+| `oh-my-tps:request` | subscribers → core | none (`undefined`) |
 
-`oh-my-tps:status` 的载荷为 `null` 时表示清除显示，与 `phase: "idle"` 不同：后者表示空闲但仍应显示最近的平均值。
+A `null` payload on `oh-my-tps:status` means "clear the display", which differs from `phase: "idle"`: the latter means idle but still showing the recent average.
 
-事件总线不回放历史，晚于核心加载的订阅者收不到此前的快照。因此订阅后应立即发出一次 `oh-my-tps:request`，核心会随即重发当前快照。
+The event bus does not replay history, so a subscriber loaded after the core receives none of the earlier snapshots. Emit `oh-my-tps:request` right after subscribing; the core will immediately resend the current snapshot.
 
-### 类型
+### Types
 
 ```ts
 export type TpsPhase = "idle" | "waiting" | "streaming" | "settled";
 
-/** counting: TTFT 正在累计；locked: 本轮已锁定；average: 历史平均；unknown: 无有效值 */
+/** counting: TTFT is accumulating; locked: locked for this round; average: recent average; unknown: no valid value */
 export type TtftKind = "counting" | "locked" | "average" | "unknown";
 
-/** live: 本轮实时值；settled: 本轮结算值；last: 上一轮结算值；average: 历史平均；unknown: 无有效值 */
+/** live: current round's live value; settled: current round's settled value; last: previous round's settled value; average: recent average; unknown: no valid value */
 export type TpsKind = "live" | "settled" | "last" | "average" | "unknown";
 
 export interface TpsStatusView {
   phase: TpsPhase;
   ttft: { value: number | null; kind: TtftKind };
   tps: { value: number | null; kind: TpsKind };
-  /** epoch 毫秒 */
+  /** epoch milliseconds */
   updatedAt: number;
 }
 ```
 
-`value` 的单位是秒（TTFT）或每秒 token 数（TPS）。`value` 为 `null` 时 `kind` 为 `"unknown"`，显示什么占位内容由渲染器决定。
+`value` is in seconds (TTFT) or tokens per second (TPS). When `value` is `null`, `kind` is `"unknown"`, and the renderer decides what placeholder to show.
 
-类型与通道常量可从无副作用的子路径导入：
+Types and channel constants can be imported from a side-effect-free subpath:
 
 ```ts
 import {
@@ -87,11 +89,11 @@ import {
 } from "oh-my-tps/events";
 ```
 
-该入口只含常量与类型，不会连带加载测量逻辑及其依赖。
+This entry contains only constants and types; it does not pull in the measurement logic or its dependencies.
 
-### 最小骨架
+### Minimal skeleton
 
-以下骨架是渲染器的最小实现，其中 view.ttft.kind 与 view.tps.kind 未被使用。
+The skeleton below is a minimal renderer. It does not use `view.ttft.kind` or `view.tps.kind`.
 
 ```ts
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -121,7 +123,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, context) => {
     ctx = context;
-    // 总线不回放历史，订阅后主动拉取一次当前快照
+    // The bus does not replay history; pull the current snapshot after subscribing.
     pi.events.emit(TPS_REQUEST_CHANNEL, undefined);
   });
 
@@ -131,28 +133,28 @@ export default function (pi: ExtensionAPI) {
 }
 ```
 
-### 渲染位置
+### Render locations
 
-`ctx.ui.setStatus(key, text)` 有两项限制：
+`ctx.ui.setStatus(key, text)` has two limitations:
 
-- 文本会被压平换行与连续空格，无法输出多行。
-- 多个插件的状态按 key 字母序排序后空格拼接在同一行，无法独占一行。
+- Newlines and repeated spaces are collapsed, so it cannot output multiple lines.
+- Statuses from multiple extensions are sorted by key and joined with spaces on a single line, so it cannot take a line of its own.
 
-需要多行或独占一行时，改用 `ctx.ui.setWidget(key, content)`。
+Use `ctx.ui.setWidget(key, content)` when you need multiple lines or a dedicated line.
 
-### 其它要点
+### Other notes
 
-- `ctx.ui.theme` 是 Proxy，在渲染时刻调用 `.fg()` 会自动跟随当前主题，不要缓存其结果。
-- Pi 没有主题切换事件。使用 `setStatus` 时，已写入的静态文本不会因切换主题而重绘，需等待下一次快照；使用 `setWidget` 的工厂函数则每次渲染都会收到当前主题。
-- RPC 模式下 `setStatus` 的文本会原样转发给客户端，建议按上面的骨架以 `ctx.mode !== "tui"` 提前返回，避免把 ANSI 序列写入非终端场景。
-- `print` / `json` 模式下 `hasUI` 为 false，`setStatus` 是空操作。
+- `ctx.ui.theme` is a Proxy; calling `.fg()` at render time follows the current theme automatically. Do not cache the result.
+- Pi has no theme-change event. With `setStatus`, text already written is not redrawn when the theme changes; it waits for the next snapshot. A `setWidget` factory, by contrast, receives the current theme on every render.
+- In RPC mode the text passed to `setStatus` is forwarded to the client verbatim. Return early on `ctx.mode !== "tui"` as the skeleton does, so ANSI sequences are not written outside a terminal.
+- In `print` and `json` modes, `hasUI` is false and `setStatus` is a no-op.
 
-### 排错
+### Troubleshooting
 
-事件总线的订阅者异常会被捕获，仅输出到 stderr，不会显示在 TUI 中。若状态栏没有出现预期内容，先确认渲染器是否抛错：查看 Pi 进程的 stderr 输出，或临时在渲染函数中加 `console.error` 观察是否被调用。
+Exceptions from event bus subscribers are caught and only written to stderr; they never appear in the TUI. If the status bar does not show what you expect, first check whether your renderer is throwing: look at the Pi process's stderr, or temporarily add a `console.error` in the render function to see whether it is called at all.
 
-常见错误：
+Common mistakes:
 
-- 忘记发出 `oh-my-tps:request`，导致订阅晚于最后一次快照而收不到数据。
-- 在 `session_start` 之前访问 `ctx`，此时尚未赋值。
-- 自定义渲染器与内置渲染器同时写入 `setStatus`，两者被拼接在同一行。
+- Forgetting to emit `oh-my-tps:request`, so the subscription starts after the last snapshot and receives nothing.
+- Accessing `ctx` before `session_start`, when it has not been assigned yet.
+- Writing to `setStatus` from both a custom renderer and the built-in renderer, so the two are joined on the same line.

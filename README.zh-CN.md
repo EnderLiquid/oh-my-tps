@@ -71,7 +71,7 @@ pi install git:github.com/EnderLiquid/oh-my-tps
 }
 ```
 
-同时，插件支持自行绘制并替换内置读数。做法是把状态数据发布到 Pi 的事件总线，实现测量与渲染解耦，内置读数只是其中一个事件订阅者。你可以关闭内置读数，订阅同一份数据并渲染到任何位置。详见 [CONFIGURATION.md](./CONFIGURATION.md)。
+同时，插件支持自行绘制并替换内置读数。做法是把状态数据发布到 Pi 的事件总线，实现测量与渲染解耦，内置读数只是其中一个事件订阅者。你可以关闭内置读数，订阅同一份数据并渲染到任何位置。详见 [CONFIGURATION.zh-CN.md](./CONFIGURATION.zh-CN.md)。
 
 ## 原理说明
 
