@@ -59,6 +59,20 @@ Here is how to read them:
 
 While a response is streaming, `Δ` may still show the previous TPS, the average TPS, or an unknown value until live TPS satisfies its initial calculation condition. When a response ends, `Δ` prefers the provider's `usage.output`; it uses the last valid live TPS only when no usable `usage.output` is available. When the current round has no valid final TPS, the final state falls back to the previous-round TPS from before this request, then to the average TPS.
 
+## Configuration
+
+Defaults work out of the box. To change the readout color, or to turn the built-in readout off and draw your own, create `~/.pi/agent/oh-my-tps.json`:
+
+```json
+{
+  "builtinRenderer": {
+    "color": "muted"
+  }
+}
+```
+
+Measurement is decoupled from rendering: the extension only publishes status data, and the built-in readout is just one subscriber. You can disable it and subscribe to the same data to render wherever you want. See [CONFIGURATION.md](./CONFIGURATION.md).
+
 ## How it works
 
 This section is for readers who want to understand what the extension measures.
