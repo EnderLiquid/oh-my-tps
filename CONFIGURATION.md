@@ -1,6 +1,6 @@
 # Configuration and Custom Rendering
 
-[简体中文](./CONFIGURATION.zh-CN.md) | English
+English | [简体中文](./CONFIGURATION.zh-CN.md)
 
 This document covers how to configure `oh-my-tps` and how to customize how the readout is rendered.
 

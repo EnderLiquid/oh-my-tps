@@ -61,7 +61,7 @@ While a response is streaming, `Δ` may still show the previous TPS, the average
 
 ## Configuration
 
-Defaults work out of the box. To change the readout color, or to turn the built-in readout off and draw your own, create `~/.pi/agent/oh-my-tps.json`:
+Defaults work out of the box. To change the readout color, create `~/.pi/agent/oh-my-tps.json`:
 
 ```json
 {
@@ -71,7 +71,7 @@ Defaults work out of the box. To change the readout color, or to turn the built-
 }
 ```
 
-Measurement is decoupled from rendering: the extension only publishes status data, and the built-in readout is just one subscriber. You can disable it and subscribe to the same data to render wherever you want. See [CONFIGURATION.md](./CONFIGURATION.md).
+The extension also supports drawing and replacing the built-in readout yourself. It does this by publishing status data to Pi's event bus, decoupling measurement from rendering, with the built-in readout as just one subscriber. You can disable the built-in readout and subscribe to the same data to render it anywhere. See [CONFIGURATION.md](./CONFIGURATION.md).
 
 ## How it works
 
