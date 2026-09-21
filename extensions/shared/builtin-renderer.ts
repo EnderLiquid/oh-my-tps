@@ -1,7 +1,7 @@
 /**
  * 内置渲染器：把快照画成 `τ0.8 Δ48.6` 写入 footer。
  *
- * 它与第三方渲染器一样是事件总线的订阅者，只是随扩展一起加载。
+ * 它与第三方渲染器一样是事件总线的订阅者，只是随插件一起加载。
  * 可通过配置里的 `builtinRenderer.enabled` 关闭。
  */
 import type { ExtensionContext, ThemeColor } from "@earendil-works/pi-coding-agent";

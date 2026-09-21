@@ -30,20 +30,20 @@ test("只写部分字段时其余保持默认", () => {
 	assert.deepEqual(result.warnings, []);
 });
 
-test("JSON 非法时回落默认配置并给出警告", () => {
+test("JSON 非法时回退默认配置并给出警告", () => {
 	const result = loadConfig(writeConfig("{ not json"));
 	assert.deepEqual(result.config, DEFAULT_CONFIG);
 	assert.equal(result.warnings.length, 1);
 	assert.match(result.warnings[0]!, /invalid JSON/);
 });
 
-test("顶层不是对象时回落默认配置", () => {
+test("顶层不是对象时回退默认配置", () => {
 	const result = loadConfig(writeConfig("[1, 2, 3]"));
 	assert.deepEqual(result.config, DEFAULT_CONFIG);
 	assert.equal(result.warnings.length, 1);
 });
 
-test("字段类型非法时逐项回落并给出警告", () => {
+test("字段类型非法时逐项回退并给出警告", () => {
 	const result = loadConfig(writeConfig(JSON.stringify({ builtinRenderer: { enabled: "yes", color: 42 } })));
 	assert.deepEqual(result.config, DEFAULT_CONFIG);
 	assert.equal(result.warnings.length, 2);

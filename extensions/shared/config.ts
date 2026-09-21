@@ -2,7 +2,7 @@
  * 配置文件读取。
  *
  * 位置固定为 `<agent dir>/oh-my-tps.json`，不做项目级配置：
- * 扩展工厂执行时拿不到 `ctx`，也就无法判断项目是否被信任。
+ * 插件工厂执行时拿不到 `ctx`，也就无法判断项目是否被信任。
  *
  * 本模块只做结构校验，不校验颜色名是否合法——颜色名需要主题实例才能验证，
  * 那一步由入口在 `session_start` 时完成。
@@ -34,7 +34,7 @@ export const DEFAULT_CONFIG: TpsConfig = Object.freeze({
 /**
  * 返回一份全新的默认配置。
  *
- * 各条回落路径都必须用本函数而不是直接返回 `DEFAULT_CONFIG`：
+ * 各条回退路径都必须用本函数而不是直接返回 `DEFAULT_CONFIG`：
  * 返回值会交给调用方，后者可能按字段覆写，共享同一实例会把改动泄漏给后续加载。
  */
 export function createDefaultConfig(): TpsConfig {
@@ -52,7 +52,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * 读取配置。文件缺失、无法解析或字段非法时回落到默认值，
+ * 读取配置。文件缺失、无法解析或字段非法时回退到默认值，
  * 并把原因写进 `warnings`，绝不让状态栏因为一份坏配置而消失。
  */
 export function loadConfig(path: string): ConfigLoadResult {
