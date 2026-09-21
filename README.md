@@ -61,7 +61,7 @@ While a response is streaming, `Δ` may still show the previous TPS, the average
 
 ## Configuration
 
-Defaults work out of the box. To change the readout color, or to turn the built-in readout off and draw your own, create `~/.pi/agent/oh-my-tps.json`:
+Defaults work out of the box. To change the readout color, create `~/.pi/agent/oh-my-tps.json`:
 
 ```json
 {
@@ -71,7 +71,7 @@ Defaults work out of the box. To change the readout color, or to turn the built-
 }
 ```
 
-Measurement is decoupled from rendering: the extension only publishes status data, and the built-in readout is just one subscriber. You can disable it and subscribe to the same data to render wherever you want. See [CONFIGURATION.md](./CONFIGURATION.md).
+The extension also supports drawing and replacing the built-in readout yourself. It does this by publishing status data to Pi's event bus, decoupling measurement from rendering, with the built-in readout as just one subscriber. You can disable the built-in readout and subscribe to the same data to render it anywhere. See [CONFIGURATION.md](./CONFIGURATION.md).
 
 ## How it works
 
@@ -83,7 +83,7 @@ Internally, the extension has four phases:
 
 1. **Waiting**: a request has been sent and is waiting for the first token.
 2. **Streaming**: the first token has arrived and the response is streaming.
-3. **Final**: the response has ended and the TPS settlement attempt for this round is complete.
+3. **Settled**: the response has ended and the TPS settlement attempt for this round is complete.
 4. **Idle**: no provider request is currently being processed.
 
 Example:
@@ -93,7 +93,7 @@ idle τ… Δ? (no historical samples yet)
     -> waiting τ0.2 Δ? (waiting for the first token; τ updates every 200ms)
     -> streaming τ1.3 Δ? (the first token may have come from thinking; τ is locked and live TPS is not ready yet)
     -> streaming τ1.3 Δ51.0 (a new non-thinking delta arrived and live TPS has met the observation condition)
-    -> final τ1.3 Δ52.0 (this round's valid final TPS came from `usage.output` or the live-TPS fallback)
+    -> settled τ1.3 Δ52.0 (this round's valid final TPS came from `usage.output` or the live-TPS fallback)
     -> idle τ1.3A Δ52.0A
     -> waiting τ0.2 Δ52.0L (prefer the previous round's last valid final TPS)
 ```

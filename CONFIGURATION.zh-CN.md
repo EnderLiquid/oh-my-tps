@@ -79,29 +79,40 @@ export interface TpsStatusView {
 
 `value` 的单位是秒（TTFT）或每秒 token 数（TPS）。`value` 为 `null` 时 `kind` 为 `"unknown"`，显示什么占位内容由渲染器决定。
 
-类型与通道常量可从无副作用的子路径导入：
+类型可从无副作用的子路径导入：
 
 ```ts
-import {
-  TPS_STATUS_CHANNEL,
-  TPS_REQUEST_CHANNEL,
-  type TpsStatusView,
-} from "oh-my-tps/events";
+import type { TpsStatusView } from "oh-my-tps/events";
 ```
 
 该入口只含常量与类型，不会连带加载测量逻辑及其依赖。
 
 ### 最小骨架
 
-以下骨架是渲染器的最小实现，其中 view.ttft.kind 与 view.tps.kind 未被使用。
+以下骨架是渲染器的最小实现。
 
 ```ts
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import {
-  TPS_STATUS_CHANNEL,
-  TPS_REQUEST_CHANNEL,
-  type TpsStatusView,
-} from "oh-my-tps/events";
+import type { TpsStatusView } from "oh-my-tps/events";
+
+// 这里内联通道名，因为散装的插件文件无法解析 "oh-my-tps/events"。
+// 若插件属于一个依赖了 oh-my-tps 的包，则可从那里导入常量。
+const TPS_STATUS_CHANNEL = "oh-my-tps:status";
+const TPS_REQUEST_CHANNEL = "oh-my-tps:request";
+
+/** `A` 表示平均值，`L` 表示上一轮结算的 TPS。 */
+function formatTtft(view: TpsStatusView): string {
+  const { value, kind } = view.ttft;
+  if (value === null) return "τ…";
+  return `τ${value.toFixed(1)}${kind === "average" ? "A" : ""}`;
+}
+
+function formatTps(view: TpsStatusView): string {
+  const { value, kind } = view.tps;
+  if (value === null) return "Δ?";
+  const suffix = kind === "average" ? "A" : kind === "last" ? "L" : "";
+  return `Δ${value.toFixed(1)}${suffix}`;
+}
 
 export default function (pi: ExtensionAPI) {
   let ctx: ExtensionContext | undefined;
@@ -114,9 +125,8 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    const ttft = view.ttft.value === null ? "τ…" : `τ${view.ttft.value.toFixed(1)}`;
-    const tps = view.tps.value === null ? "Δ?" : `Δ${view.tps.value.toFixed(1)}`;
-    ctx.ui.setStatus("my-tps", ctx.ui.theme.fg("dim", `${ttft} ${tps}`));
+    const text = `${formatTtft(view)} ${formatTps(view)}`;
+    ctx.ui.setStatus("my-tps", ctx.ui.theme.fg("dim", text));
   };
 
   pi.events.on(TPS_STATUS_CHANNEL, (data) => render(data as TpsStatusView | null));

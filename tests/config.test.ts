@@ -30,20 +30,20 @@ test("只写部分字段时其余保持默认", () => {
 	assert.deepEqual(result.warnings, []);
 });
 
-test("JSON 非法时回落默认配置并给出警告", () => {
+test("JSON 非法时回退默认配置并给出警告", () => {
 	const result = loadConfig(writeConfig("{ not json"));
 	assert.deepEqual(result.config, DEFAULT_CONFIG);
 	assert.equal(result.warnings.length, 1);
 	assert.match(result.warnings[0]!, /invalid JSON/);
 });
 
-test("顶层不是对象时回落默认配置", () => {
+test("顶层不是对象时回退默认配置", () => {
 	const result = loadConfig(writeConfig("[1, 2, 3]"));
 	assert.deepEqual(result.config, DEFAULT_CONFIG);
 	assert.equal(result.warnings.length, 1);
 });
 
-test("字段类型非法时逐项回落并给出警告", () => {
+test("字段类型非法时逐项回退并给出警告", () => {
 	const result = loadConfig(writeConfig(JSON.stringify({ builtinRenderer: { enabled: "yes", color: 42 } })));
 	assert.deepEqual(result.config, DEFAULT_CONFIG);
 	assert.equal(result.warnings.length, 2);
@@ -53,4 +53,18 @@ test("颜色名的合法性不在本层校验，原样透传", () => {
 	const result = loadConfig(writeConfig(JSON.stringify({ builtinRenderer: { color: "not-a-color" } })));
 	assert.equal(result.config.builtinRenderer.color, "not-a-color");
 	assert.deepEqual(result.warnings, []);
+});
+
+test("每次加载都返回独立对象，改动不会泄漏给后续加载", () => {
+	const path = writeConfig();
+	const first = loadConfig(path);
+
+	// 调用方可能按字段覆写返回值，不能影响共享的默认值。
+	first.config.builtinRenderer.color = "mutated";
+
+	const second = loadConfig(path);
+	assert.equal(second.config.builtinRenderer.color, "dim");
+	assert.notEqual(first.config, second.config);
+	assert.notEqual(first.config.builtinRenderer, second.config.builtinRenderer);
+	assert.equal(DEFAULT_CONFIG.builtinRenderer.color, "dim");
 });

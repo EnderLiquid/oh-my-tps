@@ -1,6 +1,6 @@
 # Configuration and Custom Rendering
 
-[简体中文](./CONFIGURATION.zh-CN.md) | English
+English | [简体中文](./CONFIGURATION.zh-CN.md)
 
 This document covers how to configure `oh-my-tps` and how to customize how the readout is rendered.
 
@@ -79,29 +79,41 @@ export interface TpsStatusView {
 
 `value` is in seconds (TTFT) or tokens per second (TPS). When `value` is `null`, `kind` is `"unknown"`, and the renderer decides what placeholder to show.
 
-Types and channel constants can be imported from a side-effect-free subpath:
+Types can be imported from a side-effect-free subpath:
 
 ```ts
-import {
-  TPS_STATUS_CHANNEL,
-  TPS_REQUEST_CHANNEL,
-  type TpsStatusView,
-} from "oh-my-tps/events";
+import type { TpsStatusView } from "oh-my-tps/events";
 ```
 
-This entry contains only constants and types; it does not pull in the measurement logic or its dependencies.
+That entry contains only constants and types; it does not pull in the measurement logic or its dependencies.
 
 ### Minimal skeleton
 
-The skeleton below is a minimal renderer. It does not use `view.ttft.kind` or `view.tps.kind`.
+The skeleton below is a minimal renderer.
 
 ```ts
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import {
-  TPS_STATUS_CHANNEL,
-  TPS_REQUEST_CHANNEL,
-  type TpsStatusView,
-} from "oh-my-tps/events";
+import type { TpsStatusView } from "oh-my-tps/events";
+
+// Channel names are inlined here because a standalone extension file cannot
+// resolve "oh-my-tps/events". When your extension is part of a package that
+// depends on oh-my-tps, import the constants from there instead.
+const TPS_STATUS_CHANNEL = "oh-my-tps:status";
+const TPS_REQUEST_CHANNEL = "oh-my-tps:request";
+
+/** `A` marks an average; `L` marks the previous round's settled TPS. */
+function formatTtft(view: TpsStatusView): string {
+  const { value, kind } = view.ttft;
+  if (value === null) return "τ…";
+  return `τ${value.toFixed(1)}${kind === "average" ? "A" : ""}`;
+}
+
+function formatTps(view: TpsStatusView): string {
+  const { value, kind } = view.tps;
+  if (value === null) return "Δ?";
+  const suffix = kind === "average" ? "A" : kind === "last" ? "L" : "";
+  return `Δ${value.toFixed(1)}${suffix}`;
+}
 
 export default function (pi: ExtensionAPI) {
   let ctx: ExtensionContext | undefined;
@@ -114,9 +126,8 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    const ttft = view.ttft.value === null ? "τ…" : `τ${view.ttft.value.toFixed(1)}`;
-    const tps = view.tps.value === null ? "Δ?" : `Δ${view.tps.value.toFixed(1)}`;
-    ctx.ui.setStatus("my-tps", ctx.ui.theme.fg("dim", `${ttft} ${tps}`));
+    const text = `${formatTtft(view)} ${formatTps(view)}`;
+    ctx.ui.setStatus("my-tps", ctx.ui.theme.fg("dim", text));
   };
 
   pi.events.on(TPS_STATUS_CHANNEL, (data) => render(data as TpsStatusView | null));
