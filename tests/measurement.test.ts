@@ -230,3 +230,21 @@ test("stop 广播清除信号，refresh 重发当前快照", () => {
 	h.measurement.refresh();
 	assert.equal(h.snapshots.at(-1), null);
 });
+
+test("stop 之后迟到的事件不再让状态栏重新亮起", () => {
+	const h = createHarness();
+	h.measurement.start();
+	h.measurement.beginWaiting();
+	h.measurement.stop();
+
+	const afterStop = h.count();
+
+	// 会话切换或 reload 后，旧实例可能仍收到事件。
+	h.measurement.beginWaiting();
+	h.measurement.handleMessageUpdate({ assistantMessageEvent: { type: "text_delta", delta: "late" } });
+	h.measurement.finalize(10);
+	h.measurement.handleAgentEnd();
+
+	assert.equal(h.count(), afterStop, "不应产生任何新快照");
+	assert.equal(h.snapshots.at(-1), null, "最后一次广播仍应为清除信号");
+});

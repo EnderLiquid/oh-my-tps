@@ -278,6 +278,9 @@ export function createTpsMeasurement(options: TpsMeasurementOptions): TpsMeasure
 		},
 
 		beginWaiting() {
+			// 已停止的实例不再响应任何事件：会话切换或 reload 后，
+			// 迟到的事件可能落到旧实例上，不应让已清屏的状态栏重新亮起。
+			if (stopped) return;
 			phase = "waiting";
 			resetRequestMeasurement();
 			requestStartedAt = now();
@@ -285,6 +288,7 @@ export function createTpsMeasurement(options: TpsMeasurementOptions): TpsMeasure
 		},
 
 		handleMessageUpdate(event) {
+			if (stopped) return;
 			const contentDelta = getContentDelta(event);
 			if (!contentDelta) return;
 			if (phase !== "waiting" && phase !== "streaming") return;
@@ -298,6 +302,7 @@ export function createTpsMeasurement(options: TpsMeasurementOptions): TpsMeasure
 		},
 
 		finalize(outputTokens) {
+			if (stopped) return;
 			if (phase !== "waiting" && phase !== "streaming") return;
 
 			phase = "settled";
@@ -313,6 +318,7 @@ export function createTpsMeasurement(options: TpsMeasurementOptions): TpsMeasure
 		},
 
 		handleAgentEnd() {
+			if (stopped) return;
 			// 被中断的轮次没有结算值，其旧的 last 不应继续对外显示。
 			if (phase === "waiting" || phase === "streaming") lastSettledTps = null;
 			renderIdle();
