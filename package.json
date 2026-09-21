@@ -43,11 +43,12 @@
     "url": "git+https://github.com/EnderLiquid/oh-my-tps.git"
   },
   "scripts": {
-    "test": "node --import ./tests/ts-resolve-hook.ts --test \"tests/*.test.ts\"",
+    "test": "tsx --test tests/*.test.ts",
     "test:types": "tsc --noEmit"
   },
   "devDependencies": {
     "@types/node": "^24.10.0",
+    "tsx": "^4.23.10",
     "typescript": "^5.9.3"
   }
 }
