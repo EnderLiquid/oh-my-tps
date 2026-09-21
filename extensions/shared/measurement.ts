@@ -26,17 +26,9 @@ const MAX_RECENT_SAMPLES = 5;
 
 type RequestPhase = TpsStatusView["phase"];
 
-/** 结算 TPS 的来源。视图暂不暴露该信息，保留以备后续追加字段。 */
-type TpsSource = "usage" | "live-fallback";
-
 type LiveDelta = {
 	receivedAt: number;
 	delta: string;
-};
-
-type SettledTps = {
-	tps: number;
-	source: TpsSource;
 };
 
 /** 从流式事件中提取出的、与测量相关的增量。 */
@@ -120,9 +112,9 @@ export function createTpsMeasurement(options: TpsMeasurementOptions): TpsMeasure
 	let lastValidLiveTps: number | null = null;
 
 	// 跨轮状态
-	let lastSettledTps: SettledTps | null = null;
+	let lastSettledTps: number | null = null;
 	const recentTtftSamples: number[] = [];
-	const recentTpsSamples: SettledTps[] = [];
+	const recentTpsSamples: number[] = [];
 
 	let waitingTimer: TimerHandle | undefined;
 
@@ -147,7 +139,7 @@ export function createTpsMeasurement(options: TpsMeasurementOptions): TpsMeasure
 	}
 
 	function getAverageTps(): number | null {
-		return getAverage(recentTpsSamples.map((sample) => sample.tps));
+		return getAverage(recentTpsSamples);
 	}
 
 	function pushRecent<T>(samples: T[], sample: T): void {
@@ -181,19 +173,19 @@ export function createTpsMeasurement(options: TpsMeasurementOptions): TpsMeasure
 	/**
 	 * @param settled 本轮结算值，仅 settled 阶段可能非空。
 	 */
-	function buildTps(settled: SettledTps | null): TpsReading {
-		if (settled) return { value: settled.tps, kind: "settled" };
+	function buildTps(settled: number | null): TpsReading {
+		if (settled !== null) return { value: settled, kind: "settled" };
 		if (phase === "streaming" && isFinitePositive(currentLiveTps)) {
 			return { value: currentLiveTps, kind: "live" };
 		}
 		// idle 阶段不显示回退值，只显示平均值。
-		if (phase !== "idle" && lastSettledTps) return { value: lastSettledTps.tps, kind: "last" };
+		if (phase !== "idle" && lastSettledTps !== null) return { value: lastSettledTps, kind: "last" };
 
 		const average = getAverageTps();
 		return isFinitePositive(average) ? { value: average, kind: "average" } : { value: null, kind: "unknown" };
 	}
 
-	function buildView(settled: SettledTps | null = null): TpsStatusView {
+	function buildView(settled: number | null = null): TpsStatusView {
 		return {
 			phase,
 			ttft: buildTtft(),
@@ -248,17 +240,17 @@ export function createTpsMeasurement(options: TpsMeasurementOptions): TpsMeasure
 		lastValidLiveTps = tps;
 	}
 
-	function resolveSettledTps(outputTokens: number | undefined, messageEndedAt: number): SettledTps | null {
+	function resolveSettledTps(outputTokens: number | undefined, messageEndedAt: number): number | null {
 		if (isFinitePositive(outputTokens)) {
 			if (firstContentDeltaAt === null) return null;
 			const durationMs = Math.max(0, messageEndedAt - firstContentDeltaAt);
 			if (durationMs < MIN_SETTLE_TPS_DURATION_MS) return null;
 
 			const tps = (outputTokens * MILLISECONDS_PER_SECOND) / durationMs;
-			return isFinitePositive(tps) ? { tps, source: "usage" } : null;
+			return isFinitePositive(tps) ? tps : null;
 		}
 
-		return isFinitePositive(lastValidLiveTps) ? { tps: lastValidLiveTps, source: "live-fallback" } : null;
+		return isFinitePositive(lastValidLiveTps) ? lastValidLiveTps : null;
 	}
 
 	return {
@@ -309,7 +301,7 @@ export function createTpsMeasurement(options: TpsMeasurementOptions): TpsMeasure
 			stopWaitingTimer();
 
 			const settledTps = resolveSettledTps(outputTokens, now());
-			if (settledTps) pushRecent(recentTpsSamples, settledTps);
+			if (settledTps !== null) pushRecent(recentTpsSamples, settledTps);
 
 			// 本轮没有结算值时，视图会回退到 lastSettledTps 作为 `L`。
 			// 因此必须先广播再更新它，否则回退值会变成本轮的新值。
