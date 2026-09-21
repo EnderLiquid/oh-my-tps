@@ -54,3 +54,17 @@ test("颜色名的合法性不在本层校验，原样透传", () => {
 	assert.equal(result.config.builtinRenderer.color, "not-a-color");
 	assert.deepEqual(result.warnings, []);
 });
+
+test("每次加载都返回独立对象，改动不会泄漏给后续加载", () => {
+	const path = writeConfig();
+	const first = loadConfig(path);
+
+	// 调用方可能按字段覆写返回值，不能影响共享的默认值。
+	first.config.builtinRenderer.color = "mutated";
+
+	const second = loadConfig(path);
+	assert.equal(second.config.builtinRenderer.color, "dim");
+	assert.notEqual(first.config, second.config);
+	assert.notEqual(first.config.builtinRenderer, second.config.builtinRenderer);
+	assert.equal(DEFAULT_CONFIG.builtinRenderer.color, "dim");
+});

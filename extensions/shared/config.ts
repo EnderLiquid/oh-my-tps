@@ -23,9 +23,23 @@ export interface TpsConfig {
 	builtinRenderer: BuiltinRendererConfig;
 }
 
-export const DEFAULT_CONFIG: TpsConfig = {
-	builtinRenderer: { enabled: true, color: "dim" },
-};
+/**
+ * 默认值本身。冻结它，防止有人误改这份共享实例；
+ * 需要一份可写副本时用 `createDefaultConfig()`。
+ */
+export const DEFAULT_CONFIG: TpsConfig = Object.freeze({
+	builtinRenderer: Object.freeze({ enabled: true, color: "dim" }),
+});
+
+/**
+ * 返回一份全新的默认配置。
+ *
+ * 各条回落路径都必须用本函数而不是直接返回 `DEFAULT_CONFIG`：
+ * 返回值会交给调用方，后者可能按字段覆写，共享同一实例会把改动泄漏给后续加载。
+ */
+export function createDefaultConfig(): TpsConfig {
+	return { builtinRenderer: { ...DEFAULT_CONFIG.builtinRenderer } };
+}
 
 export interface ConfigLoadResult {
 	config: TpsConfig;
@@ -47,7 +61,7 @@ export function loadConfig(path: string): ConfigLoadResult {
 		raw = readFileSync(path, "utf-8");
 	} catch {
 		// 文件不存在是常态，静默使用默认值。
-		return { config: DEFAULT_CONFIG, warnings: [] };
+		return { config: createDefaultConfig(), warnings: [] };
 	}
 
 	let parsed: unknown;
@@ -56,17 +70,17 @@ export function loadConfig(path: string): ConfigLoadResult {
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		return {
-			config: DEFAULT_CONFIG,
+			config: createDefaultConfig(),
 			warnings: [`${path}: invalid JSON (${message}); using default configuration`],
 		};
 	}
 
 	if (!isPlainObject(parsed)) {
-		return { config: DEFAULT_CONFIG, warnings: [`${path}: top level must be an object; using default configuration`] };
+		return { config: createDefaultConfig(), warnings: [`${path}: top level must be an object; using default configuration`] };
 	}
 
 	const warnings: string[] = [];
-	const config: TpsConfig = { builtinRenderer: { ...DEFAULT_CONFIG.builtinRenderer } };
+	const config: TpsConfig = createDefaultConfig();
 
 	const rawRenderer = parsed.builtinRenderer;
 	if (rawRenderer === undefined) return { config, warnings };
