@@ -83,7 +83,7 @@ Internally, the extension has four phases:
 
 1. **Waiting**: a request has been sent and is waiting for the first token.
 2. **Streaming**: the first token has arrived and the response is streaming.
-3. **Final**: the response has ended and the TPS settlement attempt for this round is complete.
+3. **Settled**: the response has ended and the TPS settlement attempt for this round is complete.
 4. **Idle**: no provider request is currently being processed.
 
 Example:
@@ -93,7 +93,7 @@ idle τ… Δ? (no historical samples yet)
     -> waiting τ0.2 Δ? (waiting for the first token; τ updates every 200ms)
     -> streaming τ1.3 Δ? (the first token may have come from thinking; τ is locked and live TPS is not ready yet)
     -> streaming τ1.3 Δ51.0 (a new non-thinking delta arrived and live TPS has met the observation condition)
-    -> final τ1.3 Δ52.0 (this round's valid final TPS came from `usage.output` or the live-TPS fallback)
+    -> settled τ1.3 Δ52.0 (this round's valid final TPS came from `usage.output` or the live-TPS fallback)
     -> idle τ1.3A Δ52.0A
     -> waiting τ0.2 Δ52.0L (prefer the previous round's last valid final TPS)
 ```
